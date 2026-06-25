@@ -80,7 +80,7 @@ cargo build --release         # or: just build-release
 Download the `.deb` from the [latest release](https://github.com/grenzenloseSchublade/cosmic-ext-applet-vitals/releases/latest) and install it:
 
 ```sh
-sudo apt install ./cosmic-ext-applet-vitals_0.9.0_amd64.deb
+sudo apt install ./cosmic-ext-applet-vitals_1.0.0_amd64.deb
 ```
 
 The prebuilt binary targets **amd64** with a recent glibc (Pop!_OS / Ubuntu 24.04+ / Debian 13+ class). libcosmic is statically linked; the only dynamic dependencies are system libraries (`libc6`, `libgcc-s1`, `libxkbcommon0`). It is **architecture**-specific, not machine-specific — hwmon chips are detected at runtime with graceful fallback.
@@ -98,7 +98,7 @@ Installs the binary to `~/.local/bin`, the `.desktop` file to `~/.local/share/ap
 ```sh
 sudo apt install debhelper pkg-config libxkbcommon-dev libwayland-dev   # once
 dpkg-buildpackage -b -us -uc                                            # produces ../*.deb
-sudo apt install ../cosmic-ext-applet-vitals_0.9.0_*.deb
+sudo apt install ../cosmic-ext-applet-vitals_1.0.0_*.deb
 ```
 
 A recent Rust toolchain (`cargo`/`rustc`) is required; the build fetches the crates from the network. The packaging lives under [`debian/`](debian/) (native format).
@@ -158,8 +158,9 @@ just uninstall-user           # or: sudo just uninstall
 
 ## Known limitations / roadmap
 
-- **Metric collection runs on the UI thread.** Since NVML is only called for an *awake* dGPU, a hang is very unlikely; a theoretical NVML stall (driver bug while the GPU is active) could briefly freeze the display, though. Planned: move collection to a background task and return the result via a message.
 - **Panel text only horizontal.** The compact value next to the icon appears only in a horizontal panel; in a vertical panel/dock it stays icon-only (text would be too wide there).
+
+*(Resolved in 1.0: metric collection now runs on a background thread via `spawn_blocking`, so a stalled NVML call can never freeze the UI.)*
 
 ## Feedback & contributing
 

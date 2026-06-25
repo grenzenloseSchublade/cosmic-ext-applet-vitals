@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.0.0 — 2026-06-25
+
+Erste stabile Version.
+
+- **Metrik-Erfassung im Hintergrund:** Die (blockierende) Erfassung läuft via
+  `tokio::task::spawn_blocking` auf einem Hintergrund-Thread, nie auf dem UI-Thread.
+  Ein NVML-Stall friert die Oberfläche nicht mehr ein (Werte werden höchstens kurz
+  veraltet). In-Flight-Guard verhindert Thread-Stau.
+- Damit ist der letzte Roadmap-Punkt erfüllt; ansonsten funktionsgleich zu 0.9.0.
+
 ## 0.9.0 — 2026-06-25
 
 Erste öffentliche Vorab-Version. Funktionsvollständig; v1.0 folgt, sobald die

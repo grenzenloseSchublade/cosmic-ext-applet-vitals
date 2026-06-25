@@ -88,7 +88,7 @@ Installiert Binary nach `~/.local/bin`, `.desktop` nach `~/.local/share/applicat
 ```sh
 sudo apt install debhelper pkg-config libxkbcommon-dev libwayland-dev   # einmalig
 dpkg-buildpackage -b -us -uc                                            # erzeugt ../*.deb
-sudo apt install ../cosmic-ext-applet-vitals_0.9.0_*.deb
+sudo apt install ../cosmic-ext-applet-vitals_1.0.0_*.deb
 ```
 
 Voraussetzung ist eine aktuelle Rust-Toolchain (`cargo`/`rustc`); der Build holt die Crates aus dem Netz. Das Packaging liegt unter [`debian/`](debian/) (natives Format).
@@ -148,8 +148,9 @@ just uninstall-user           # bzw. sudo just uninstall
 
 ## Bekannte Einschränkungen / Roadmap
 
-- **Metrik-Erfassung läuft im UI-Thread.** Da NVML nur bei *wacher* dGPU aufgerufen wird, ist ein Hängen sehr unwahrscheinlich; ein theoretischer NVML-Stall (Treiberfehler bei aktiver GPU) könnte die Anzeige aber kurz einfrieren. Geplant: Erfassung in einen Hintergrund-Task auslagern und das Ergebnis per Message zurückliefern.
 - **Panel-Text nur horizontal.** Der kompakte Wert neben dem Icon erscheint nur in horizontaler Leiste; in vertikaler Leiste/Dock bleibt es beim reinen Icon (Text wäre dort zu breit).
+
+*(In 1.0 gelöst: Die Metrik-Erfassung läuft jetzt via `spawn_blocking` auf einem Hintergrund-Thread — ein hängender NVML-Aufruf kann die UI nicht mehr einfrieren.)*
 
 ## Feedback & Mitwirken
 
