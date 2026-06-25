@@ -1,0 +1,14 @@
+[Desktop Entry]
+Name=Vitals
+Comment=System-Monitor (CPU/RAM/Temp/Netz/GPU) für COSMIC
+Type=Application
+Icon=io.github.grenzenloseschublade.CosmicAppletVitals
+Exec=cosmic-ext-applet-vitals
+Terminal=false
+StartupNotify=true
+Categories=System;Monitor;
+Keywords=COSMIC;monitor;system;cpu;ram;network;gpu;temperature;
+NoDisplay=true
+X-CosmicApplet=true
+X-CosmicHoverPopup=Auto
+X-CosmicAppletKeywords=monitor;system;cpu;ram;network;gpu;

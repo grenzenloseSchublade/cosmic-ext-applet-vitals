@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.grenzenloseschublade.CosmicAppletVitals</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-only</project_license>
+  <name>Vitals</name>
+  <summary>Robustes System-Monitor-Applet für COSMIC</summary>
+  <description>
+    <p>
+      Zeigt CPU- und RAM-Auslastung, Temperaturen, Netzwerk-Durchsatz sowie
+      NVIDIA-GPU-Status im COSMIC-Panel oder -Dock. Liest ausschließlich /proc und
+      /sys und startet niemals einen Subprozess; die NVIDIA-dGPU wird nur abgefragt,
+      wenn sie ohnehin wach ist — daher batterieschonend und suspend-fest.
+    </p>
+  </description>
+  <launchable type="desktop-id">io.github.grenzenloseschublade.CosmicAppletVitals.desktop</launchable>
+  <url type="homepage">https://github.com/grenzenloseSchublade/cosmic-ext-applet-vitals</url>
+  <developer id="io.github.grenzenloseschublade">
+    <name>grenzenloseSchublade</name>
+  </developer>
+  <provides>
+    <id>com.system76.CosmicApplet</id>
+    <binary>cosmic-ext-applet-vitals</binary>
+  </provides>
+  <categories>
+    <category>System</category>
+    <category>Utility</category>
+  </categories>
+  <keywords>
+    <keyword>COSMIC</keyword>
+    <keyword>monitor</keyword>
+  </keywords>
+  <content_rating type="oars-1.1" />
+</component>

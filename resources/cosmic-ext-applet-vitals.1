@@ -1,0 +1,28 @@
+.TH COSMIC-EXT-APPLET-VITALS 1 "2026-06-25" "0.9.0" "User Commands"
+.SH NAME
+cosmic-ext-applet-vitals \- robustes System-Monitor-Applet für COSMIC
+.SH SYNOPSIS
+.B cosmic-ext-applet-vitals
+.SH DESCRIPTION
+Panel-/Dock-Applet für die COSMIC-Desktop-Umgebung. Zeigt CPU-/RAM-Auslastung,
+Temperaturen, Netzdurchsatz, Lüfter und NVIDIA-GPU-Status; ein Klick öffnet ein
+Detail-Popup mit Einstellungen (Metriken, Reihenfolge, Einheiten, Darstellung).
+.PP
+Das Applet wird nicht direkt auf der Kommandozeile benutzt, sondern in COSMIC
+über Einstellungen \(-> Leiste/Dock \(-> Applets hinzugefügt.
+.SH DESIGN
+\fIonly read, never blocking\fR: Es liest ausschließlich lokal aus
+.IR /proc ", " /sys
+und (optional, falls vorhanden) NVML in\-process \(em kein Subprozess, keine
+Netzwerkaktivität, keine Telemetrie. Eine NVIDIA\-dGPU wird nie geweckt oder
+wachgehalten (suspend\- und akkufreundlich).
+.SH KONFIGURATION
+Über cosmic\-config unter
+.IR ~/.config/cosmic/io.github.grenzenloseschublade.CosmicAppletVitals/v1/ ;
+zusätzlich direkt im Popup (Zahnrad\-Symbol). Hardware\-spezifische Pfade/Chipnamen
+liegen zentral in
+.IR src/hw.rs .
+.SH SIEHE AUCH
+Projektseite: https://github.com/grenzenloseSchublade/cosmic-ext-applet-vitals
+.SH AUTOR
+grenzenloseSchublade

@@ -1,0 +1,36 @@
+[package]
+name = "cosmic-ext-applet-vitals"
+version = "0.9.0"
+edition = "2021"
+license = "GPL-3.0-only"
+description = "Robustes System-Monitor-Applet für COSMIC (CPU/RAM/Temp/Netz/GPU) — liest nur /proc + /sys, startet nie einen Subprozess."
+repository = "https://github.com/grenzenloseSchublade/cosmic-ext-applet-vitals"
+authors = ["grenzenloseSchublade"]
+readme = "README.md"
+keywords = ["cosmic", "applet", "system-monitor", "nvidia", "gpu"]
+categories = ["gui"]
+
+[dependencies]
+# NVIDIA-Werte in-process über NVML (lädt libnvidia-ml.so per dlopen zur Laufzeit;
+# baut auch ohne NVIDIA-Libs und ist graceful, wenn keine NVIDIA-GPU da ist).
+nvml-wrapper = "0.10"
+
+[dependencies.libcosmic]
+git = "https://github.com/pop-os/libcosmic.git"
+# Auf den verifiziert kompilierenden Stand gepinnt (libcosmic ist nur auf master).
+rev = "417923fb"
+default-features = false
+features = [
+    "applet",
+    "applet-token",
+    "dbus-config",   # Live-Konfig über cosmic-settings-daemon
+    "multi-window",  # für das Popup-Fenster
+    "tokio",
+    "wayland",
+    "winit",
+]
+
+[profile.release]
+opt-level = "s"
+lto = "thin"
+strip = true

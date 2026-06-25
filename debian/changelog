@@ -1,0 +1,10 @@
+cosmic-ext-applet-vitals (0.9.0) unstable; urgency=medium
+
+  * Erste öffentliche Vorab-Version (0.9.0).
+  * System-Monitor-Applet für COSMIC: CPU, RAM, Temperaturen, Netz,
+    Lüfter und NVIDIA-GPU.
+  * Design "only read, never blocking": nur /proc, /sys und NVML
+    in-process, kein Subprozess, keine Netzwerkaktivität; die dGPU
+    wird nie geweckt oder wachgehalten.
+
+ -- grenzenloseSchublade <grenzenloseSchublade@users.noreply.github.com>  Thu, 25 Jun 2026 13:43:23 +0200

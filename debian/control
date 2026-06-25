@@ -1,0 +1,30 @@
+Source: cosmic-ext-applet-vitals
+Section: utils
+Priority: optional
+Maintainer: grenzenloseSchublade <grenzenloseSchublade@users.noreply.github.com>
+Build-Depends:
+ debhelper-compat (= 13),
+ cargo,
+ rustc,
+ pkg-config,
+ libxkbcommon-dev,
+ libwayland-dev
+Standards-Version: 4.6.2
+Homepage: https://github.com/grenzenloseSchublade/cosmic-ext-applet-vitals
+Rules-Requires-Root: no
+
+Package: cosmic-ext-applet-vitals
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Suggests: libnvidia-ml1
+Description: robustes System-Monitor-Applet für COSMIC (CPU/RAM/Temp/Netz/GPU)
+ Schlankes Panel-/Dock-Applet für die COSMIC-Desktop-Umgebung: CPU-/RAM-
+ Auslastung, Temperaturen, Netzdurchsatz, Lüfter und NVIDIA-GPU-Status, mit
+ Detail-Popup.
+ .
+ Liest ausschließlich lokal aus /proc, /sys und (optional) NVML in-process —
+ kein Subprozess, keine Netzwerkaktivität, keine Telemetrie. Eine NVIDIA-dGPU
+ wird nie geweckt oder wachgehalten (suspend- und akkufreundlich).
+ .
+ NVIDIA-Werte sind optional: libnvidia-ml wird zur Laufzeit per dlopen geladen;
+ ohne NVIDIA läuft das Applet unverändert weiter.

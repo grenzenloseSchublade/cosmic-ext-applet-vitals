@@ -1,0 +1,38 @@
+#!/usr/bin/make -f
+# Build über cargo (libcosmic kommt als git-Abhängigkeit; daher kein dh-cargo/debcargo).
+# Hinweis: Der Build holt Crates aus dem Netz und benötigt eine aktuelle Rust-Toolchain
+# (z. B. via rustup). Erstellt ein natives .deb (siehe debian/source/format).
+
+export DH_VERBOSE = 1
+# Crate-Cache innerhalb des Baums halten, damit ~/.cargo nicht angefasst wird.
+export CARGO_HOME = $(CURDIR)/debian/.cargo
+# Build-Pfade aus dem Binär entfernen (kein /home/<user> in Panic-/Debug-Strings).
+export RUSTFLAGS = --remap-path-prefix=$(CURDIR)=.
+
+DESTDIR = $(CURDIR)/debian/cosmic-ext-applet-vitals
+APPID = io.github.grenzenloseschublade.CosmicAppletVitals
+
+%:
+	dh $@
+
+override_dh_auto_build:
+	cargo build --release --locked
+
+override_dh_auto_install:
+	install -Dm0755 target/release/cosmic-ext-applet-vitals \
+		$(DESTDIR)/usr/bin/cosmic-ext-applet-vitals
+	install -Dm0644 resources/app.desktop \
+		$(DESTDIR)/usr/share/applications/$(APPID).desktop
+	install -Dm0644 resources/app.metainfo.xml \
+		$(DESTDIR)/usr/share/metainfo/$(APPID).metainfo.xml
+	install -Dm0644 resources/icon.svg \
+		$(DESTDIR)/usr/share/icons/hicolor/scalable/apps/$(APPID).svg
+	install -Dm0644 resources/cosmic-ext-applet-vitals.1 \
+		$(DESTDIR)/usr/share/man/man1/cosmic-ext-applet-vitals.1
+
+# Keine Tests im Paketbau.
+override_dh_auto_test:
+
+override_dh_auto_clean:
+	cargo clean || true
+	rm -rf debian/.cargo
