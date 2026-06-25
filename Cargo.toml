@@ -14,6 +14,9 @@ categories = ["gui"]
 # NVIDIA-Werte in-process über NVML (lädt libnvidia-ml.so per dlopen zur Laufzeit;
 # baut auch ohne NVIDIA-Libs und ist graceful, wenn keine NVIDIA-GPU da ist).
 nvml-wrapper = "0.10"
+# Nur für tokio::task::spawn_blocking (Metrik-Erfassung im Hintergrund, nie auf dem UI-Thread).
+# Das Runtime stellt libcosmic (cosmic::executor) bereit; hier nur die API.
+tokio = { version = "1", default-features = false, features = ["rt"] }
 
 [dependencies.libcosmic]
 git = "https://github.com/pop-os/libcosmic.git"

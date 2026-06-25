@@ -938,6 +938,7 @@ version = "0.9.0"
 dependencies = [
  "libcosmic",
  "nvml-wrapper",
+ "tokio",
 ]
 
 [[package]]

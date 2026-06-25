@@ -7,6 +7,7 @@ use cosmic::iced::platform_specific::shell::wayland::commands::popup::{destroy_p
 use cosmic::iced::{time, window::Id, Alignment, Length, Limits, Subscription};
 use cosmic::prelude::*;
 use cosmic::widget;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 /// Symbolisches Panel-Icon (Prozessor-Chip), eingebettet → kein Theme-Install nötig,
@@ -90,14 +91,21 @@ pub struct AppModel {
     config: Config,
     /// Handle zum Zurückschreiben der Config (cosmic-config). `None`, falls nicht verfügbar.
     config_handler: Option<cosmic_config::Config>,
-    collector: Collector,
+    /// Hinter Arc<Mutex>, damit die (blockierende) Erfassung in einem Hintergrund-Thread
+    /// läuft (spawn_blocking) und den UI-Thread nie blockiert.
+    collector: Arc<Mutex<Collector>>,
     metrics: Metrics,
+    /// True, solange eine Hintergrund-Erfassung läuft (In-Flight-Guard gegen Thread-Stau,
+    /// falls NVML einmal hängt).
+    refreshing: bool,
     ui_mode: ViewMode,
 }
 
 #[derive(Debug, Clone)]
 pub enum Message {
     Tick,
+    /// Ergebnis einer Hintergrund-Erfassung.
+    MetricsUpdated(Metrics),
     TogglePopup,
     PopupClosed(Id),
     UpdateConfig(Config),
@@ -138,6 +146,26 @@ impl AppModel {
         let n = (current + 1) % modulo;
         self.persist(move |c, h| set(c, h, n));
     }
+
+    /// Stößt eine **Hintergrund-Erfassung** an (`spawn_blocking` → nie auf dem UI-Thread).
+    /// `live` = ob NVML gelesen werden darf (Popup offen). Der In-Flight-Guard verhindert,
+    /// dass sich Erfassungen stauen, falls eine (z. B. NVML) hängt.
+    fn spawn_refresh(&mut self, live: bool) -> Task<cosmic::Action<Message>> {
+        if self.refreshing {
+            return Task::none();
+        }
+        self.refreshing = true;
+        let collector = self.collector.clone();
+        Task::perform(
+            async move {
+                tokio::task::spawn_blocking(move || collector.lock().unwrap_or_else(|e| e.into_inner()).refresh(live))
+                    .await
+                    .unwrap_or_default()
+            },
+            Message::MetricsUpdated,
+        )
+        .map(cosmic::Action::App)
+    }
 }
 
 impl cosmic::Application for AppModel {
@@ -165,9 +193,9 @@ impl cosmic::Application for AppModel {
             })
             .unwrap_or_default();
 
-        let mut collector = Collector::new();
-        // Beim Start kein NVML/Pin (Popup ist zu).
-        let metrics = collector.refresh(false);
+        let collector = Arc::new(Mutex::new(Collector::new()));
+        // Sofortiger Erststand (synchron, billig, kein NVML weil Popup zu).
+        let metrics = collector.lock().unwrap_or_else(|e| e.into_inner()).refresh(false);
 
         let app = AppModel {
             core,
@@ -176,6 +204,7 @@ impl cosmic::Application for AppModel {
             config_handler,
             collector,
             metrics,
+            refreshing: false,
             ui_mode: ViewMode::Metrics,
         };
         (app, Task::none())
@@ -198,8 +227,12 @@ impl cosmic::Application for AppModel {
     fn update(&mut self, message: Self::Message) -> Task<cosmic::Action<Self::Message>> {
         match message {
             Message::Tick => {
-                // Live-GPU (NVML) nur lesen, solange das Popup offen ist.
-                self.metrics = self.collector.refresh(self.popup.is_some());
+                // Erfassung im Hintergrund anstoßen; Live-GPU (NVML) nur bei offenem Popup.
+                return self.spawn_refresh(self.popup.is_some());
+            }
+            Message::MetricsUpdated(m) => {
+                self.metrics = m;
+                self.refreshing = false;
             }
             Message::UpdateConfig(config) => {
                 self.config = config;
@@ -207,15 +240,14 @@ impl cosmic::Application for AppModel {
             Message::PopupClosed(id) => {
                 if self.popup.as_ref() == Some(&id) {
                     self.popup = None;
-                    // NVML sofort freigeben → dGPU darf wieder einschlafen.
-                    self.metrics = self.collector.refresh(false);
+                    // NVML im Hintergrund freigeben → dGPU darf wieder einschlafen.
+                    return self.spawn_refresh(false);
                 }
             }
             Message::TogglePopup => {
                 return if let Some(p) = self.popup.take() {
-                    // Popup wird geschlossen → NVML-Handle umgehend freigeben.
-                    self.metrics = self.collector.refresh(false);
-                    destroy_popup(p)
+                    // Popup wird geschlossen → NVML-Handle (im Hintergrund) freigeben.
+                    Task::batch([destroy_popup(p), self.spawn_refresh(false)])
                 } else {
                     self.ui_mode = ViewMode::Metrics;
                     let new_id = Id::unique();
