@@ -15,6 +15,8 @@ So bleibt das Applet leichtgewichtig und ist die direkte Antwort auf den Suspend
 
 ## Warum dieses Applet?
 
+> **Was Vitals besonders macht:** soweit bekannt das **erste/einzige COSMIC-System-Monitor-Applet, das eine NVIDIA-Hybrid-dGPU schlafen lässt**. Andere Monitore starten entweder `nvidia-smi` (blockiert den Suspend) oder halten ein dauerhaftes NVML-Handle, das die **dGPU wachhält** (Akkuverbrauch, kein RTD3). Vitals weckt/pinnt sie nie — siehe *only read, never blocking* oben.
+
 Übliche System-Monitor-Applets starten zum Auslesen der GPU bei **jedem Tick** `nvidia-smi` als Subprozess. Beim Suspend bleibt so ein Aufruf im sich abbauenden NVIDIA-Treiber hängen und blockiert das Einschlafen ~90 s lang (systemd-Timeout). Vitals vermeidet das **konstruktionsbedingt**:
 
 - **Kein einziger Subprozess** — alle Werte kommen direkt aus `/proc` und `/sys`.

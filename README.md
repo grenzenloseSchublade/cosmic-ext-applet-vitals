@@ -15,6 +15,8 @@ This keeps the applet lightweight and is the direct answer to the suspend hang o
 
 ## Why this applet?
 
+> **What makes Vitals different:** as far as we know, it is the **first/only COSMIC system-monitor applet that keeps an NVIDIA hybrid dGPU asleep**. Other monitors either spawn `nvidia-smi` (which hangs suspend) or hold a persistent NVML handle that **pins the dGPU awake** (battery drain, no RTD3). Vitals never wakes or pins it — see *only read, never blocking* above.
+
 Typical system monitor applets spawn `nvidia-smi` as a subprocess on **every tick** to read the GPU. During suspend such a call hangs in the tearing-down NVIDIA driver and blocks sleep for ~90 s (systemd timeout). Vitals avoids this **by design**:
 
 - **Not a single subprocess** — all values come straight from `/proc` and `/sys`.
