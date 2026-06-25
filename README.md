@@ -1,156 +1,168 @@
-# Vitals — COSMIC System-Monitor-Applet
+# Vitals — COSMIC system monitor applet
 
-Ein schlankes, **robustes** System-Monitor-Applet für die [COSMIC](https://system76.com/cosmic)-Leiste (Panel) oder das Dock. Zeigt **CPU-/RAM-Auslastung, Temperaturen, Netzwerk-Durchsatz** und den **NVIDIA-GPU-Status** — mit Detail-Popup beim Anklicken.
+*🌐 Language: **English** · [Deutsch](README.de.md)*
 
-## Design-Philosophie: *only read, never blocking*
+A lean, **robust** system monitor applet for the [COSMIC](https://system76.com/cosmic) panel or dock. Shows **CPU/RAM usage, temperatures, network throughput** and the **NVIDIA GPU status** — with a detail popup on click.
 
-Das Leitprinzip ist **„only read, never blocking"** — das Applet **liest** Systemzustände nur und tut dabei **nie etwas, das blockieren oder Hardware-Zustände verändern kann**:
+## Design philosophy: *only read, never blocking*
 
-- **Only read:** Werte kommen ausschließlich aus `/proc`, `/sys` und in-process via NVML — **kein** Subprozess, **kein** Schreibzugriff, **kein** Wecken schlafender Geräte.
-- **Never blocking:** keine Aufrufe, die im Treiber/Suspend hängen können. Eine schlafende NVIDIA-dGPU (RTD3) wird **nie** geweckt (NVML nur bei `runtime_status == active`); fehlende Sensoren werden ausgeblendet statt zu blockieren oder zu paniken.
+The guiding principle is **"only read, never blocking"** — the applet only **reads** system state and never does anything that could block or change hardware state:
 
-So bleibt das Applet leichtgewichtig und ist die direkte Antwort auf den Suspend-Hänger üblicher Monitore (siehe unten).
+- **Only read:** all values come from `/proc`, `/sys` and in-process NVML — **no** subprocess, **no** writes, **no** waking of sleeping devices.
+- **Never blocking:** no calls that can hang in a driver/during suspend. A sleeping NVIDIA dGPU (RTD3) is **never** woken (NVML only when `runtime_status == active`); missing sensors are hidden instead of blocking or panicking.
 
-## Warum dieses Applet?
+This keeps the applet lightweight and is the direct answer to the suspend hang of typical monitors (see below).
 
-Übliche System-Monitor-Applets starten zum Auslesen der GPU bei **jedem Tick** `nvidia-smi` als Subprozess. Beim Suspend bleibt so ein Aufruf im sich abbauenden NVIDIA-Treiber hängen und blockiert das Einschlafen ~90 s lang (systemd-Timeout). Vitals vermeidet das **konstruktionsbedingt**:
+## Why this applet?
 
-- **Kein einziger Subprozess** — alle Werte kommen direkt aus `/proc` und `/sys`.
-- **GPU batterieschonend & suspend-fest:** die NVIDIA-dGPU wird nur über **NVML in-process** abgefragt — und das **nur**, wenn sie laut sysfs (`runtime_status == active`) ohnehin schon wach ist **und** das Detail-Popup geöffnet ist. Sonst wird das NVML-Handle **freigegeben** (`/dev/nvidia0` geschlossen), damit die dGPU per **RTD3** einschlafen kann. So **pinnt** das Applet die dGPU nicht und **weckt** sie nie selbst. Den Zustand (schläft/aktiv) + Modus liest es pin-frei aus sysfs; Live-Werte (Auslastung/VRAM/Temp) gibt es nur, wenn die GPU gerade arbeitet und man hinschaut.
-- **Panik-frei:** fehlende Sensoren (z. B. geblacklistetes `spd5118` für RAM-Temp) werden einfach ausgeblendet.
-- **Unabhängig von `nvidia-powerd`** — läuft mit Dynamic Boost an oder aus.
+Typical system monitor applets spawn `nvidia-smi` as a subprocess on **every tick** to read the GPU. During suspend such a call hangs in the tearing-down NVIDIA driver and blocks sleep for ~90 s (systemd timeout). Vitals avoids this **by design**:
 
-## Anzeige
+- **Not a single subprocess** — all values come straight from `/proc` and `/sys`.
+- **Battery- and suspend-friendly GPU:** the NVIDIA dGPU is queried only via **in-process NVML** — and only when it is already awake per sysfs (`runtime_status == active`) **and** the detail popup is open. Otherwise the NVML handle is **released** (`/dev/nvidia0` closed) so the dGPU can sleep via **RTD3**. Thus the applet never **pins** the dGPU and never **wakes** it. State (asleep/active) + mode are read pin-free from sysfs; live values (usage/VRAM/temp) only appear when the GPU is actually working and you're looking.
+- **Panic-free:** missing sensors (e.g. a blacklisted `spd5118` for RAM temp) are simply hidden.
+- **Independent of `nvidia-powerd`** — works with Dynamic Boost on or off.
 
-- **Panel:** symbolisches Chip-Icon, optional mit kompaktem Wert daneben (z. B. `CPU 12%` oder `↓1.2M/s ↑0.1M/s`, nur horizontale Leiste). Die Applet-Fläche **wächst dynamisch** mit dem Text (via `core.applet.autosize_window`).
-- **Popup (Details):** CPU (gesamt + Temp, optional pro Kern), RAM (genutzt/gesamt + Temp), Netz (↓/↑ + Typ **WLAN/LAN/VPN**), GPU (bei aktiver dGPU Last + VRAM + Temp; sonst Zustand/Modus), Lüfterdrehzahlen. Optional als **Auslastungsbalken** (zweizeilig, volle Breite) für CPU/RAM/GPU.
+## Display
 
-## Datenquellen
+- **Panel:** symbolic chip icon, optionally with a compact value next to it (e.g. `CPU 12%` or `↓1.2M/s ↑0.1M/s`, horizontal panel only). The applet area **grows dynamically** with the text (via `core.applet.autosize_window`).
+- **Popup (details):** CPU (total + temp, optional per core), RAM (used/total + temp), network (↓/↑ + type **WLAN/LAN/VPN**), GPU (when the dGPU is active: usage + VRAM + temp; otherwise state/mode), fan speeds. Optionally as **usage bars** (two-line, full width) for CPU/RAM/GPU.
 
-| Wert | Quelle |
+## Data sources
+
+| Value | Source |
 |---|---|
-| CPU-Last | `/proc/stat` (Delta) |
-| CPU-Temp | hwmon `coretemp` „Package id 0" (Fallback `k10temp`/`acpitz`) |
+| CPU load | `/proc/stat` (delta) |
+| CPU temp | hwmon `coretemp` "Package id 0" (fallback `k10temp`/`acpitz`) |
 | RAM | `/proc/meminfo` |
-| RAM-Temp | hwmon `spd5118` (optional) |
-| Lüfter | hwmon `thinkpad` `fan*_input` |
-| Netz ↑/↓ | `/sys/class/net/<if>/statistics/{rx,tx}_bytes` (Default-Route-Interface) |
-| Netz-Typ | WLAN (`…/<if>/wireless`), VPN (`tun`/`tap`/`wg`/`ppp`), sonst LAN |
-| dGPU-Zustand | `/sys/bus/pci/devices/<nvidia>/power/runtime_status` |
-| NVIDIA-Modus | `/etc/prime-discrete` |
-| GPU-Last/Temp/VRAM | NVML (`libnvidia-ml`, `memory_info()`) — nur wenn dGPU aktiv |
+| RAM temp | hwmon `spd5118` (optional) |
+| Fans | hwmon `thinkpad` `fan*_input` |
+| Net ↑/↓ | `/sys/class/net/<if>/statistics/{rx,tx}_bytes` (default-route interface) |
+| Net type | WLAN (`…/<if>/wireless`), VPN (`tun`/`tap`/`wg`/`ppp`), otherwise LAN |
+| dGPU state | `/sys/bus/pci/devices/<nvidia>/power/runtime_status` |
+| NVIDIA mode | `/etc/prime-discrete` |
+| GPU usage/temp/VRAM | NVML (`libnvidia-ml`, `memory_info()`) — only when the dGPU is active |
 
-## Hardware-Anpassung
+## Adapting to other hardware
 
-Alle hardware-/board-spezifischen Pfade und Sensor-Bezeichner liegen **an einer Stelle**: [`src/hw.rs`](src/hw.rs). Für andere Hardware nur dort anpassen — kein Suchen im restlichen Code:
+All hardware-/board-specific paths and sensor identifiers live **in one place**: [`src/hw.rs`](src/hw.rs). For other hardware, edit only there — no hunting through the rest of the code:
 
-- **CPU-Temp:** `CPU_TEMP_LABELED` (Chip + `temp*_label`), Intel `coretemp`/„Package id 0" und AMD `k10temp`/„Tctl" sind dabei; Fallback `acpitz`.
-- **RAM-Temp:** `RAM_TEMP_CHIP` (Default `spd5118`).
-- **Lüfter:** `FAN_CHIP` (Default `thinkpad`) + `FAN_MAX_INDEX` — z. B. `dell_smm` oder `nct6…` eintragen.
+- **CPU temp:** `CPU_TEMP_LABELED` (chip + `temp*_label`); Intel `coretemp`/"Package id 0" and AMD `k10temp`/"Tctl" are included; fallback `acpitz`.
+- **RAM temp:** `RAM_TEMP_CHIP` (default `spd5118`).
+- **Fans:** `FAN_CHIP` (default `thinkpad`) + `FAN_MAX_INDEX` — e.g. add `dell_smm` or `nct6…`.
 - **GPU:** `PRIME_DISCRETE_PATH`, `NVIDIA_VENDOR_ID`, `DISPLAY_CLASS_PREFIX`, `RUNTIME_STATUS_REL`.
-- **Netz:** `VPN_IFACE_PREFIXES`.
+- **Net:** `VPN_IFACE_PREFIXES`.
 
-Eigene hwmon-Chipnamen herausfinden:
+Find your own hwmon chip names:
 
 ```sh
 for f in /sys/class/hwmon/hwmon*/name; do echo "$f -> $(cat "$f")"; done
 grep . /sys/class/hwmon/hwmon*/temp*_label
 ```
 
-## Datenschutz — kein Heimtelefonieren
+## Privacy — no phoning home
 
-Vitals **telefoniert nicht nach Hause**: keine Netzwerkverbindung, keine Telemetrie/Analytics, kein Auto-Update-Callback, kein Tracking. Es liest **ausschließlich lokal** aus `/proc`, `/sys` und der NVIDIA-Bibliothek **in-process** (kein Subprozess) und **schreibt/sendet nichts** nach außen — die einzige Persistenz ist die lokale Einstellungsdatei. Das ist die direkte Folge der Design-Philosophie **„only read, never blocking"** und lässt sich am schlanken Quellcode nachvollziehen.
+Vitals **does not phone home**: no network connection, no telemetry/analytics, no auto-update callback, no tracking. It reads **purely locally** from `/proc`, `/sys` and the NVIDIA library **in-process** (no subprocess) and **writes/sends nothing** outward — the only persistence is the local settings file. This is the direct consequence of the **"only read, never blocking"** design philosophy and can be verified from the lean source.
 
-## Bauen
+## Building
 
-Voraussetzung: Rust (`cargo`), Wayland-/xkb-Dev-Pakete (für libcosmic).
+Requires: Rust (`cargo`), Wayland/xkb dev packages (for libcosmic).
 
 ```sh
-cargo build --release         # oder: just build-release
+cargo build --release         # or: just build-release
 ```
 
-## Installieren
+## Installing
 
-**A) Aus dem Quellcode — benutzer-lokal (ohne sudo, empfohlen für den Eigengebrauch):**
+**A) Prebuilt `.deb` (amd64) — easiest:**
+
+Download the `.deb` from the [latest release](https://github.com/grenzenloseSchublade/cosmic-ext-applet-vitals/releases/latest) and install it:
 
 ```sh
-./install.sh                  # oder: just install-user
+sudo apt install ./cosmic-ext-applet-vitals_0.9.0_amd64.deb
 ```
 
-Installiert Binary nach `~/.local/bin`, `.desktop` nach `~/.local/share/applications`. System-weit: `sudo just install` (prefix=/usr).
+The prebuilt binary targets **amd64** with a recent glibc (Pop!_OS / Ubuntu 24.04+ / Debian 13+ class). libcosmic is statically linked; the only dynamic dependencies are system libraries (`libc6`, `libgcc-s1`, `libxkbcommon0`). It is **architecture**-specific, not machine-specific — hwmon chips are detected at runtime with graceful fallback.
 
-**B) Eigenes `.deb` bauen:**
+**B) From source — user-local (no sudo, recommended for personal use):**
 
 ```sh
-sudo apt install debhelper pkg-config libxkbcommon-dev libwayland-dev   # einmalig
-dpkg-buildpackage -b -us -uc                                            # erzeugt ../*.deb
+./install.sh                  # or: just install-user
+```
+
+Installs the binary to `~/.local/bin`, the `.desktop` file to `~/.local/share/applications`. System-wide: `sudo just install` (prefix=/usr).
+
+**C) Build your own `.deb`:**
+
+```sh
+sudo apt install debhelper pkg-config libxkbcommon-dev libwayland-dev   # once
+dpkg-buildpackage -b -us -uc                                            # produces ../*.deb
 sudo apt install ../cosmic-ext-applet-vitals_0.9.0_*.deb
 ```
 
-Voraussetzung ist eine aktuelle Rust-Toolchain (`cargo`/`rustc`); der Build holt die Crates aus dem Netz. Das Packaging liegt unter [`debian/`](debian/) (natives Format).
+A recent Rust toolchain (`cargo`/`rustc`) is required; the build fetches the crates from the network. The packaging lives under [`debian/`](debian/) (native format).
 
-**C) PPA / `.deb`-Release:** *geplant* — eine Launchpad-PPA für bequeme `apt`-Updates ist für die Zukunft vorgesehen, aber noch nicht eingerichtet.
+**D) PPA:** *planned* — a Launchpad PPA for convenient `apt` updates is intended for the future but not set up yet.
 
-## Distribution — und warum kein Flatpak
+## Distribution — and why no Flatpak
 
-**Bezugswege:** Quellcode auf **GitHub**; native **`.deb`**-Pakete (Build via [`debian/`](debian/)), später optional über eine **Launchpad-PPA** für `apt`-Updates — passend zu Pop!_OS/Ubuntu/Debian.
+**Channels:** source on **GitHub**; native **`.deb`** packages (built via [`debian/`](debian/)), later optionally a **Launchpad PPA** for `apt` updates — suited to Pop!_OS/Ubuntu/Debian.
 
-**Bewusst kein Flatpak.** Ein Flatpak-Sandbox müsste sich breite Rechte erbitten — Lesezugriff auf `/proc`, `/sys`, `/etc/prime-discrete` und `/dev/nvidia*` — was dem Leitprinzip **„only read, never blocking"** und dem schlanken, transparenten Zugriffsmodell direkt widerspricht. Ein natives `.deb` ohne Sandbox-Sonderrechte ist hier ehrlicher und einfacher zu prüfen.
+**Deliberately no Flatpak.** A Flatpak sandbox would have to request broad permissions — read access to `/proc`, `/sys`, `/etc/prime-discrete` and `/dev/nvidia*` — which directly contradicts the **"only read, never blocking"** principle and the lean, transparent access model. A native `.deb` without sandbox exceptions is more honest here and easier to audit.
 
-## Als Applet hinzufügen
+## Adding the applet
 
-COSMIC → **Einstellungen → Leiste** (oder **Dock**) → **Applets** → **„Vitals"** hinzufügen.
-Dasselbe Applet lässt sich in Panel **und/oder** Dock platzieren. Klick öffnet das Detail-Popup.
+COSMIC → **Settings → Panel** (or **Dock**) → **Applets** → add **"Vitals"**.
+The same applet can be placed in the panel **and/or** the dock. A click opens the detail popup.
 
-## Einstellungen im Popup
+## Settings in the popup
 
-Im Detail-Popup oben rechts das **Zahnrad** anklicken → Einstellungs-Ansicht (zurück über den **Pfeil**):
+In the detail popup, click the **gear** in the top right → settings view (back via the **arrow**):
 
-- **Metriken & Reihenfolge:** je Metrik ein Schalter (an/aus) plus **▲/▼** zum Umsortieren. Die Reihenfolge gilt sofort für die Werteliste und wird persistiert (`metric_order`).
-- **Anzeige:** CPU-Temperatur, °C/°F, Monospace-Schrift, „GPU im Schlaf ausblenden", **Netz-Einheit** (Klick zykliert SI → binär → Bit).
-- **Darstellung:** **Balken im Popup** (grafische Auslastung für CPU/RAM/GPU statt Text), **Wert neben dem Panel-Icon** (kompakt, nur in horizontaler Leiste) sowie **Panel-Wert** (welche Metrik dort steht: CPU/RAM/Netz/GPU).
-- **Aktualisierung:** Intervall in ms (Schritt 250, min 250).
-- **Auf Standard zurücksetzen:** alle Optionen (inkl. Reihenfolge) auf die Defaults.
+- **Metrics & order:** a toggle per metric (on/off) plus **▲/▼** to reorder. The order applies immediately to the value list and is persisted (`metric_order`).
+- **Display:** CPU temperature, °C/°F, monospace font, "hide GPU while asleep", **net unit** (click cycles SI → binary → bit).
+- **Presentation:** **bars in the popup** (graphical usage for CPU/RAM/GPU instead of text), **value next to the panel icon** (compact, horizontal panel only), and **panel value** (which metric is shown there: CPU/RAM/Net/GPU).
+- **Refresh:** interval in ms (step 250, min 250).
+- **Reset to defaults:** all options (including the order) back to defaults.
 
-Alles greift **live** und landet in der cosmic-config (siehe unten).
+Everything applies **live** and is stored in cosmic-config (see below).
 
-## Konfiguration
+## Configuration
 
-Persistiert über cosmic-config (live, ohne Neustart). Optionen u. a.:
+Persisted via cosmic-config (live, no restart). Options include:
 
-| Option | Bedeutung | Default |
+| Option | Meaning | Default |
 |---|---|---|
-| `interval_ms` | Aktualisierungsintervall (ms) | 1500 |
-| `show_cpu` / `show_cpu_temp` / `show_mem` / `show_net` / `show_gpu` | Welche Werte inline im Panel | an |
-| `fahrenheit` | Temperatur in °F | aus |
+| `interval_ms` | refresh interval (ms) | 1500 |
+| `show_cpu` / `show_cpu_temp` / `show_mem` / `show_net` / `show_gpu` | which values appear | on |
+| `fahrenheit` | temperature in °F | off |
 | `net_unit` | 0 = MB/s, 1 = MiB/s, 2 = Mbit/s | 0 |
-| `show_fans` | Lüfterzeile im Popup | an |
-| `mono_font` | Monospace-Font in der Werteliste | an |
-| `hide_gpu_when_asleep` | dGPU im Schlaf ganz ausblenden | aus |
-| `per_core` | CPU pro Kern im Popup | an |
-| `metric_order` | Reihenfolge der Metriken (IDs: 0=CPU,1=RAM,2=Netz,3=GPU,4=Lüfter,5=Kerne) | `[0,1,2,3,4,5]` |
-| `graphical` | Auslastungsbalken im Popup (CPU/RAM/GPU) | aus |
-| `panel_text` | Kompakter Wert neben dem Panel-Icon (nur horizontale Leiste) | aus |
-| `panel_metric` | Welche Metrik im Panel-Text (0=CPU,1=RAM,2=Netz,3=GPU) | 0 |
-| `warn_temp_c` / `crit_temp_c` | Schwellen für Farbwarnungen | 80 / 90 |
+| `show_fans` | fan line in the popup | on |
+| `mono_font` | monospace font in the value list | on |
+| `hide_gpu_when_asleep` | hide the dGPU entirely while asleep | off |
+| `per_core` | CPU per core in the popup | on |
+| `metric_order` | order of metrics (IDs: 0=CPU, 1=RAM, 2=Net, 3=GPU, 4=Fans, 5=Cores) | `[0,1,2,3,4,5]` |
+| `graphical` | usage bars in the popup (CPU/RAM/GPU) | off |
+| `panel_text` | compact value next to the panel icon (horizontal panel only) | off |
+| `panel_metric` | which metric in the panel text (0=CPU, 1=RAM, 2=Net, 3=GPU) | 0 |
+| `warn_temp_c` / `crit_temp_c` | thresholds for colored temperature warnings | 80 / 90 |
 
-Konfigdatei: `~/.config/cosmic/io.github.grenzenloseschublade.CosmicAppletVitals/v1/`.
+Config files: `~/.config/cosmic/io.github.grenzenloseschublade.CosmicAppletVitals/v1/`.
 
-## Deinstallieren
+## Uninstalling
 
 ```sh
-just uninstall-user           # bzw. sudo just uninstall
+just uninstall-user           # or: sudo just uninstall
 ```
 
-## Bekannte Einschränkungen / Roadmap
+## Known limitations / roadmap
 
-- **Metrik-Erfassung läuft im UI-Thread.** Da NVML nur bei *wacher* dGPU aufgerufen wird, ist ein Hängen sehr unwahrscheinlich; ein theoretischer NVML-Stall (Treiberfehler bei aktiver GPU) könnte die Anzeige aber kurz einfrieren. Geplant: Erfassung in einen Hintergrund-Task auslagern und das Ergebnis per Message zurückliefern.
-- **Panel-Text nur horizontal.** Der kompakte Wert neben dem Icon erscheint nur in horizontaler Leiste; in vertikaler Leiste/Dock bleibt es beim reinen Icon (Text wäre dort zu breit).
+- **Metric collection runs on the UI thread.** Since NVML is only called for an *awake* dGPU, a hang is very unlikely; a theoretical NVML stall (driver bug while the GPU is active) could briefly freeze the display, though. Planned: move collection to a background task and return the result via a message.
+- **Panel text only horizontal.** The compact value next to the icon appears only in a horizontal panel; in a vertical panel/dock it stays icon-only (text would be too wide there).
 
-## Feedback & Mitwirken
+## Feedback & contributing
 
-Fragen, Fehlerberichte und Anregungen bitte über die **[GitHub-Issues](https://github.com/grenzenloseSchublade/cosmic-ext-applet-vitals/issues)** des Projekts — das ist der zentrale Kontakt- und Feedback-Kanal. Pull Requests sind willkommen.
+Questions, bug reports and suggestions: please use the project's **[GitHub issues](https://github.com/grenzenloseSchublade/cosmic-ext-applet-vitals/issues)** — that is the central contact and feedback channel. Pull requests welcome.
 
-## Lizenz
+## License
 
 GPL-3.0-only.
