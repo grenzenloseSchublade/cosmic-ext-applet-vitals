@@ -164,6 +164,7 @@ pub enum Message {
     SetInterval(u64),
     SetGraphical(bool),
     SetPanelText(bool),
+    SetPowerBreakdown(bool),
     CyclePanelMetric,
     ResetDefaults,
 }
@@ -357,6 +358,9 @@ impl cosmic::Application for AppModel {
             }
             Message::SetGraphical(v) => self.persist(move |c, h| c.set_graphical(h, v)),
             Message::SetPanelText(v) => self.persist(move |c, h| c.set_panel_text(h, v)),
+            Message::SetPowerBreakdown(v) => {
+                self.persist(move |c, h| c.set_power_breakdown(h, v));
+            }
             Message::CyclePanelMetric => {
                 // Über die Position in PANEL zyklieren — die rohen IDs sind nicht
                 // lückenlos (Watt = 6). Unbekannte/veraltete Werte fallen auf CPU zurück.
@@ -439,7 +443,9 @@ impl cosmic::Application for AppModel {
 
         let body = match self.ui_mode {
             ViewMode::Metrics => self.metrics_view(),
-            ViewMode::Settings => self.settings_view(),
+            // Scrollbar: Die Einstellungsliste ist höher als der Platz unter dem Panel;
+            // ohne Scrollen schneidet der Compositor unten ab (Reset-Knopf unerreichbar).
+            ViewMode::Settings => widget::scrollable(self.settings_view()).into(),
         };
 
         let content = widget::column::with_children(vec![header.into(), body])
@@ -661,19 +667,18 @@ impl AppModel {
                     None if p.sys_from_battery => "– · Netz".into(),
                     None => "–".into(),
                 };
-                let cpu = p
-                    .cpu_pkg_w
-                    .map(|w| format!("CPU {w:.1} W"))
-                    .unwrap_or_default();
-                let gpu = gpu_w.map(|w| format!("GPU {w:.1} W")).unwrap_or_default();
-                // links Gesamt · mittig CPU-Paket · rechts GPU (leer wenn dGPU schläft).
-                vec![triple_row(
-                    "Watt",
-                    total,
-                    cpu,
-                    value_text(gpu, c.mono_font),
-                    c.mono_font,
-                )]
+                // Gesamt (psys) enthält CPU/GPU bereits — Aufschlüsselung ist optional
+                // und kompakt ohne Einheiten-Wiederholung, damit die Zeile nicht umbricht.
+                let mut parts = vec![total];
+                if c.power_breakdown {
+                    if let Some(w) = p.cpu_pkg_w {
+                        parts.push(format!("CPU {w:.1}"));
+                    }
+                    if let Some(w) = gpu_w {
+                        parts.push(format!("GPU {w:.1}"));
+                    }
+                }
+                vec![labeled_row("Watt", parts.join(" · "), c.mono_font)]
             }
             MetricKind::Battery => {
                 use crate::metrics::power::BatStatus;
@@ -778,6 +783,7 @@ impl AppModel {
         );
         let display2_section = widget::settings::section().header(padded_heading("Darstellung"));
         let display2_section = toggle_item(display2_section, "Balken im Popup (CPU/RAM/GPU)", c.graphical, Message::SetGraphical);
+        let display2_section = toggle_item(display2_section, "Watt aufschlüsseln", c.power_breakdown, Message::SetPowerBreakdown);
         let display2_section = toggle_item(display2_section, "Wert neben dem Panel-Icon", c.panel_text, Message::SetPanelText);
         let display2_section = display2_section.add(widget::settings::item(
             "Panel-Wert",

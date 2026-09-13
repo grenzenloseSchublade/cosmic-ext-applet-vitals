@@ -16,6 +16,11 @@
   bestehende Einstellungen bleiben erhalten (kein Config-Versions-Bump).
 - Packaging: metainfo.xml einheitlich nach `share/metainfo`; eingecheckte
   Debug-Binaries entfernt.
+- Watt-Zeile einzeilig mit „·"-Trennern (Gesamt zuerst, statt Drei-Spalten-Layout
+  mit Umbruch bei schmalem Popup); neuer Schalter „Watt aufschlüsseln"
+  (`power_breakdown`) blendet die CPU/GPU-Teilwerte aus.
+- Einstellungs-Seite scrollbar — vorher wurde die Liste unterhalb der
+  Popup-Höhe abgeschnitten („Auf Standard zurücksetzen" unerreichbar).
 
 ## 1.0.0 — 2026-06-25
 

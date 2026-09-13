@@ -18,6 +18,8 @@ pub struct Config {
     pub show_fans: bool,
     /// Leistungsaufnahme (System/CPU/GPU in Watt) im Popup zeigen.
     pub show_power: bool,
+    /// Watt-Zeile zusätzlich nach CPU/GPU aufschlüsseln (sonst nur Gesamtwert).
+    pub power_breakdown: bool,
     /// Akku-Zeile (Spannung, Ladezustand) im Popup zeigen.
     pub show_battery: bool,
     /// Reihenfolge der Metriken im Popup als IDs (siehe `MetricKind` in app.rs).
@@ -55,6 +57,7 @@ impl Default for Config {
             show_gpu: true,
             show_fans: true,
             show_power: true,
+            power_breakdown: true,
             show_battery: false,
             metric_order: vec![0, 1, 2, 3, 4, 5, 6, 7],
             fahrenheit: false,
