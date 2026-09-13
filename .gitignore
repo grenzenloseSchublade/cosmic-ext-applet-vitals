@@ -12,3 +12,7 @@ debian/*
 !debian/install
 !debian/rules
 !debian/source
+# Lokale Debug-/Testbinaries
+/send_check
+/test_send
+/test_nvml_send
