@@ -43,6 +43,8 @@ pub struct GpuInfo {
     /// Belegter/gesamter VRAM in MB (nur wenn dGPU aktiv).
     pub vram_used_mb: Option<u32>,
     pub vram_total_mb: Option<u32>,
+    /// Aktuelle Leistungsaufnahme in W (nur wenn dGPU aktiv, via NVML).
+    pub power_w: Option<f32>,
 }
 
 pub struct GpuReader {
@@ -108,6 +110,8 @@ impl GpuReader {
             if let Ok(dev) = nvml.device_by_index(0) {
                 info.util = dev.utilization_rates().ok().map(|u| u.gpu);
                 info.temp_c = dev.temperature(TemperatureSensor::Gpu).ok();
+                // Leistungsaufnahme (mW → W). Gleiche Gating-Regel wie alle NVML-Reads.
+                info.power_w = dev.power_usage().ok().map(|mw| mw as f32 / 1000.0);
                 // VRAM (Bytes → MB). Kein zusätzlicher Subprozess; NVML wird ohnehin nur bei aktiver dGPU angefasst.
                 if let Ok(mem) = dev.memory_info() {
                     let mb = |b: u64| (b / 1024 / 1024) as u32;

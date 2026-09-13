@@ -56,3 +56,20 @@ uninstall-user:
           {{ userdir / 'share/metainfo' / appid + '.metainfo.xml' }} \
           {{ userdir / 'share/appdata' / appid + '.metainfo.xml' }} \
           {{ userdir / 'share/icons/hicolor/scalable/apps' / appid + '.svg' }}
+
+# --- RAPL-Freigabe (opt-in, siehe README "Leistungsmessung (RAPL)") ---
+# Macht die RAPL-Energiezähler für die Gruppe "rapl" lesbar (CVE-2020-8694-Abwägung!).
+rapl-rule := '90-cosmic-vitals-rapl.rules'
+
+install-rapl-rule:
+    sudo groupadd -f rapl
+    sudo usermod -aG rapl {{ env('USER') }}
+    sudo install -Dm0644 {{ 'resources' / rapl-rule }} {{ '/etc/udev/rules.d' / rapl-rule }}
+    sudo udevadm control --reload
+    sudo udevadm trigger -s powercap
+    @echo "Fertig. WICHTIG: einmal ab-/anmelden (Gruppenmitgliedschaft), danach Applet neu starten."
+
+uninstall-rapl-rule:
+    sudo rm -f {{ '/etc/udev/rules.d' / rapl-rule }}
+    sudo udevadm control --reload
+    @echo "Regel entfernt. Rechte gelten bis zum Reboot weiter; Gruppe 'rapl' bleibt bestehen."

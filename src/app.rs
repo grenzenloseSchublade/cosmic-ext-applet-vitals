@@ -35,23 +35,42 @@ pub enum MetricKind {
     Gpu,
     Fans,
     Cores,
+    Power,
+    Battery,
 }
 
 impl MetricKind {
     /// Kanonische Reihenfolge — **Single Source of Truth** für die `u8`-IDs (Index = ID).
-    const ALL: [MetricKind; 6] = [
+    /// Neue Metriken NUR hinten anhängen, sonst verschieben sich gespeicherte IDs.
+    const ALL: [MetricKind; 8] = [
         Self::Cpu,
         Self::Mem,
         Self::Net,
         Self::Gpu,
         Self::Fans,
         Self::Cores,
+        Self::Power,
+        Self::Battery,
     ];
     /// Im Panel-Text anzeigbare Metriken (kompakter Einzelwert), zykliert durch `CyclePanelMetric`.
-    const PANEL: [MetricKind; 4] = [Self::Cpu, Self::Mem, Self::Net, Self::Gpu];
+    const PANEL: [MetricKind; 5] = [Self::Cpu, Self::Mem, Self::Net, Self::Gpu, Self::Power];
 
     fn from_u8(v: u8) -> Option<Self> {
         Self::ALL.get(v as usize).copied()
+    }
+
+    /// Die `u8`-ID (= Index in `ALL`).
+    const fn id(self) -> u8 {
+        match self {
+            Self::Cpu => 0,
+            Self::Mem => 1,
+            Self::Net => 2,
+            Self::Gpu => 3,
+            Self::Fans => 4,
+            Self::Cores => 5,
+            Self::Power => 6,
+            Self::Battery => 7,
+        }
     }
 
     fn label(self) -> &'static str {
@@ -62,6 +81,8 @@ impl MetricKind {
             Self::Gpu => "GPU",
             Self::Fans => "Lüfter",
             Self::Cores => "Kerne",
+            Self::Power => "Watt",
+            Self::Battery => "Akku",
         }
     }
 
@@ -74,8 +95,29 @@ impl MetricKind {
             Self::Gpu => c.show_gpu,
             Self::Fans => c.show_fans,
             Self::Cores => c.per_core,
+            Self::Power => c.show_power,
+            Self::Battery => c.show_battery,
         }
     }
+}
+
+/// Bringt eine gespeicherte `metric_order` auf den aktuellen Stand: unbekannte
+/// IDs raus, Duplikate raus, fehlende (neu hinzugekommene) IDs hinten anfügen.
+/// Wird nur in-memory angewandt — kein Zurückschreiben, sonst entstünde eine
+/// Schleife mit dem Config-Watcher.
+fn normalize_order(order: &[u8]) -> Vec<u8> {
+    let mut out: Vec<u8> = Vec::with_capacity(MetricKind::ALL.len());
+    for &id in order {
+        if MetricKind::from_u8(id).is_some() && !out.contains(&id) {
+            out.push(id);
+        }
+    }
+    for kind in MetricKind::ALL {
+        if !out.contains(&kind.id()) {
+            out.push(kind.id());
+        }
+    }
+    out
 }
 
 /// Anzeigemodus des Popups: Werteliste oder Einstellungen.
@@ -185,13 +227,15 @@ impl cosmic::Application for AppModel {
     fn init(core: cosmic::Core, _flags: Self::Flags) -> (Self, Task<cosmic::Action<Self::Message>>) {
         // Handle behalten, damit Einstellungen aus dem UI zurückgeschrieben werden können.
         let config_handler = cosmic_config::Config::new(Self::APP_ID, Config::VERSION).ok();
-        let config = config_handler
+        let mut config = config_handler
             .as_ref()
             .map(|context| match Config::get_entry(context) {
                 Ok(config) => config,
                 Err((_errors, config)) => config,
             })
             .unwrap_or_default();
+        // Alte gespeicherte Reihenfolgen um neue Metrik-IDs ergänzen.
+        config.metric_order = normalize_order(&config.metric_order);
 
         let collector = Arc::new(Mutex::new(Collector::new()));
         // Sofortiger Erststand (synchron, billig, kein NVML weil Popup zu).
@@ -234,7 +278,8 @@ impl cosmic::Application for AppModel {
                 self.metrics = m;
                 self.refreshing = false;
             }
-            Message::UpdateConfig(config) => {
+            Message::UpdateConfig(mut config) => {
+                config.metric_order = normalize_order(&config.metric_order);
                 self.config = config;
             }
             Message::PopupClosed(id) => {
@@ -281,6 +326,8 @@ impl cosmic::Application for AppModel {
                     MetricKind::Gpu => c.set_show_gpu(h, b),
                     MetricKind::Fans => c.set_show_fans(h, b),
                     MetricKind::Cores => c.set_per_core(h, b),
+                    MetricKind::Power => c.set_show_power(h, b),
+                    MetricKind::Battery => c.set_show_battery(h, b),
                 });
             }
             Message::MoveUp(i) => {
@@ -311,10 +358,13 @@ impl cosmic::Application for AppModel {
             Message::SetGraphical(v) => self.persist(move |c, h| c.set_graphical(h, v)),
             Message::SetPanelText(v) => self.persist(move |c, h| c.set_panel_text(h, v)),
             Message::CyclePanelMetric => {
-                let modulo = MetricKind::PANEL.len() as u8;
-                self.cycle_persist(self.config.panel_metric, modulo, |c, h, n| {
-                    c.set_panel_metric(h, n)
-                });
+                // Über die Position in PANEL zyklieren — die rohen IDs sind nicht
+                // lückenlos (Watt = 6). Unbekannte/veraltete Werte fallen auf CPU zurück.
+                let pos = MetricKind::from_u8(self.config.panel_metric)
+                    .and_then(|k| MetricKind::PANEL.iter().position(|p| *p == k))
+                    .unwrap_or(0);
+                let next = MetricKind::PANEL[(pos + 1) % MetricKind::PANEL.len()];
+                self.persist(move |c, h| c.set_panel_metric(h, next.id()));
             }
             Message::ResetDefaults => {
                 self.persist(|c, h| {
@@ -444,6 +494,11 @@ impl AppModel {
                 .util
                 .map(|u| format!("GPU {u:>3}%"))
                 .unwrap_or_else(|| "GPU   –".into()),
+            Some(MetricKind::Power) => m
+                .power
+                .sys_w
+                .map(|w| format!("{w:>5.1} W"))
+                .unwrap_or_else(|| "    – W".into()),
             _ => format!("CPU {:>3.0}%", m.cpu_pct),
         }
     }
@@ -588,6 +643,63 @@ impl AppModel {
                         labeled_row(label, cores, true)
                     })
                     .collect()
+            }
+            MetricKind::Power => {
+                let p = &m.power;
+                let gpu_w = m.gpu.power_w;
+                // Keine Quelle verfügbar (Desktop ohne Akku, RAPL gesperrt) → Zeile weglassen.
+                if p.sys_w.is_none()
+                    && p.cpu_pkg_w.is_none()
+                    && gpu_w.is_none()
+                    && !p.sys_from_battery
+                {
+                    return Vec::new();
+                }
+                let total = match p.sys_w {
+                    Some(w) => format!("{w:.1} W"),
+                    // Akku-Fallback am Netz: nur die Laderate wäre messbar → bewusst „–".
+                    None if p.sys_from_battery => "– · Netz".into(),
+                    None => "–".into(),
+                };
+                let cpu = p
+                    .cpu_pkg_w
+                    .map(|w| format!("CPU {w:.1} W"))
+                    .unwrap_or_default();
+                let gpu = gpu_w.map(|w| format!("GPU {w:.1} W")).unwrap_or_default();
+                // links Gesamt · mittig CPU-Paket · rechts GPU (leer wenn dGPU schläft).
+                vec![triple_row(
+                    "Watt",
+                    total,
+                    cpu,
+                    value_text(gpu, c.mono_font),
+                    c.mono_font,
+                )]
+            }
+            MetricKind::Battery => {
+                use crate::metrics::power::BatStatus;
+                let p = &m.power;
+                // Kein Akku (Desktop) → Zeile weglassen.
+                let Some(v) = p.bat_voltage_v else {
+                    return Vec::new();
+                };
+                let mut parts = vec![format!("{v:.2} V")];
+                match p.bat_status {
+                    BatStatus::Charging => parts.push("lädt".into()),
+                    BatStatus::Discharging => parts.push("entlädt".into()),
+                    BatStatus::Full => parts.push("voll · Netz".into()),
+                    BatStatus::Unknown => {}
+                }
+                // Lade-/Entladeleistung nur zeigen, wenn tatsächlich Strom fließt.
+                if matches!(p.bat_status, BatStatus::Charging | BatStatus::Discharging) {
+                    if let Some(w) = p.bat_power_w {
+                        parts.push(format!("{w:.1} W"));
+                    }
+                }
+                // Näherung „Zug am Netzteil" (psys + Ladeleistung), nur beim Laden.
+                if let Some(cw) = p.charger_w {
+                    parts.push(format!("Netzteil ≈ {cw:.0} W"));
+                }
+                vec![labeled_row("Akku", parts.join(" · "), c.mono_font)]
             }
         }
     }

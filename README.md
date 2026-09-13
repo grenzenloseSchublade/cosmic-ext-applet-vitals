@@ -27,7 +27,7 @@ Typical system monitor applets spawn `nvidia-smi` as a subprocess on **every tic
 ## Display
 
 - **Panel:** symbolic chip icon, optionally with a compact value next to it (e.g. `CPU 12%` or `↓1.2M/s ↑0.1M/s`, horizontal panel only). The applet area **grows dynamically** with the text (via `core.applet.autosize_window`).
-- **Popup (details):** CPU (total + temp, optional per core), RAM (used/total + temp), network (↓/↑ + type **WLAN/LAN/VPN**), GPU (when the dGPU is active: usage + VRAM + temp; otherwise state/mode), fan speeds. Optionally as **usage bars** (two-line, full width) for CPU/RAM/GPU.
+- **Popup (details):** CPU (total + temp, optional per core), RAM (used/total + temp), network (↓/↑ + type **WLAN/LAN/VPN**), GPU (when the dGPU is active: usage + VRAM + temp; otherwise state/mode), fan speeds, **power draw** (system total / CPU package / GPU, in watts — see *Power measurement (RAPL)* below) and optionally a **battery line** (voltage, charging state, charge/discharge power). Optionally as **usage bars** (two-line, full width) for CPU/RAM/GPU.
 
 ## Data sources
 
@@ -42,7 +42,9 @@ Typical system monitor applets spawn `nvidia-smi` as a subprocess on **every tic
 | Net type | WLAN (`…/<if>/wireless`), VPN (`tun`/`tap`/`wg`/`ppp`), otherwise LAN |
 | dGPU state | `/sys/bus/pci/devices/<nvidia>/power/runtime_status` |
 | NVIDIA mode | `/etc/prime-discrete` |
-| GPU usage/temp/VRAM | NVML (`libnvidia-ml`, `memory_info()`) — only when the dGPU is active |
+| GPU usage/temp/VRAM/power | NVML (`libnvidia-ml`, `memory_info()`, `power_usage()`) — only when the dGPU is active |
+| System / CPU package power | RAPL `/sys/class/powercap` (`psys` / `package-0`, counter delta) — needs the opt-in udev rule, see below |
+| Battery voltage/power/state | `/sys/class/power_supply/BAT*/{voltage_now,power_now,status}` |
 
 ## Adapting to other hardware
 
@@ -60,6 +62,21 @@ Find your own hwmon chip names:
 for f in /sys/class/hwmon/hwmon*/name; do echo "$f -> $(cat "$f")"; done
 grep . /sys/class/hwmon/hwmon*/temp*_label
 ```
+
+## Power measurement (RAPL)
+
+The watts line shows up to three values: **system total**, **CPU package** (incl. iGPU) and **GPU**. System and CPU come from Intel/AMD **RAPL** energy counters under `/sys/class/powercap` (`psys` and `package-0`, computed as counter delta per tick, wrap-around handled).
+
+**Permissions:** since kernel 5.10, `energy_uj` is readable by **root only** — the mitigation for [CVE-2020-8694](https://nvd.nist.gov/vuln/detail/CVE-2020-8694) ("PLATYPUS", a power side channel that can leak secrets across users on multi-user machines). Vitals therefore ships an **opt-in** udev rule that re-exposes the counters to members of a dedicated `rapl` group (mode 0440 — deliberately **not** world-readable):
+
+```sh
+just install-rapl-rule    # creates group "rapl", adds you, installs the udev rule
+# then: log out/in once (group membership), restart the applet
+```
+
+**Trade-off:** on a single-user laptop the risk is low; on shared/multi-user machines consider **not** installing the rule. Remove it with `just uninstall-rapl-rule`.
+
+**Without the rule** the applet degrades gracefully: on battery the system total falls back to the battery's discharge rate (`power_now`); on AC no total is shown ("– · Netz") because the battery then only measures the charge rate. The GPU value is independent of RAPL (NVML, only while the dGPU is awake and the popup is open — the dGPU is still **never** woken). While charging, the battery line additionally estimates the **draw from the charger** (`psys` + charge power; conversion losses not included). A real measurement of the USB-C charger output is not possible — the PD controller (UCSI) only reports the negotiated contract, not live values. True CPU core voltage (Vcore) is not exposed on modern laptops without root/MSR access; only the battery voltage is shown.
 
 ## Privacy — no phoning home
 
@@ -122,7 +139,7 @@ In the detail popup, click the **gear** in the top right → settings view (back
 
 - **Metrics & order:** a toggle per metric (on/off) plus **▲/▼** to reorder. The order applies immediately to the value list and is persisted (`metric_order`).
 - **Display:** CPU temperature, °C/°F, monospace font, "hide GPU while asleep", **net unit** (click cycles SI → binary → bit).
-- **Presentation:** **bars in the popup** (graphical usage for CPU/RAM/GPU instead of text), **value next to the panel icon** (compact, horizontal panel only), and **panel value** (which metric is shown there: CPU/RAM/Net/GPU).
+- **Presentation:** **bars in the popup** (graphical usage for CPU/RAM/GPU instead of text), **value next to the panel icon** (compact, horizontal panel only), and **panel value** (which metric is shown there: CPU/RAM/Net/GPU/Watts).
 - **Refresh:** interval in ms (step 250, min 250).
 - **Reset to defaults:** all options (including the order) back to defaults.
 
@@ -139,13 +156,15 @@ Persisted via cosmic-config (live, no restart). Options include:
 | `fahrenheit` | temperature in °F | off |
 | `net_unit` | 0 = MB/s, 1 = MiB/s, 2 = Mbit/s | 0 |
 | `show_fans` | fan line in the popup | on |
+| `show_power` | watts line (system/CPU/GPU) in the popup | on |
+| `show_battery` | battery line (voltage, state) in the popup | off |
 | `mono_font` | monospace font in the value list | on |
 | `hide_gpu_when_asleep` | hide the dGPU entirely while asleep | off |
 | `per_core` | CPU per core in the popup | on |
-| `metric_order` | order of metrics (IDs: 0=CPU, 1=RAM, 2=Net, 3=GPU, 4=Fans, 5=Cores) | `[0,1,2,3,4,5]` |
+| `metric_order` | order of metrics (IDs: 0=CPU, 1=RAM, 2=Net, 3=GPU, 4=Fans, 5=Cores, 6=Watts, 7=Battery) | `[0,1,2,3,4,5,6,7]` |
 | `graphical` | usage bars in the popup (CPU/RAM/GPU) | off |
 | `panel_text` | compact value next to the panel icon (horizontal panel only) | off |
-| `panel_metric` | which metric in the panel text (0=CPU, 1=RAM, 2=Net, 3=GPU) | 0 |
+| `panel_metric` | which metric in the panel text (0=CPU, 1=RAM, 2=Net, 3=GPU, 6=Watts) | 0 |
 | `warn_temp_c` / `crit_temp_c` | thresholds for colored temperature warnings | 80 / 90 |
 
 Config files: `~/.config/cosmic/io.github.grenzenloseschublade.CosmicAppletVitals/v1/`.

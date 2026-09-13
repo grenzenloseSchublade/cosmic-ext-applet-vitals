@@ -1,0 +1,10 @@
+# Opt-in: RAPL-Energiezähler für Mitglieder der Gruppe "rapl" lesbar machen.
+#
+# Hintergrund: energy_uj ist seit Kernel 5.10 nur für root lesbar (Mitigation
+# für CVE-2020-8694 / PLATYPUS, ein Power-Seitenkanal). Diese Regel gibt den
+# Zähler NUR für die Gruppe "rapl" frei (0440, bewusst nicht world-readable).
+# Abwägung siehe README, Abschnitt "Leistungsmessung (RAPL)".
+#
+# Installation: just install-rapl-rule   (legt Gruppe an, lädt udev neu)
+ACTION=="add", SUBSYSTEM=="powercap", KERNEL=="intel-rapl:*", \
+  RUN+="/bin/chgrp rapl /sys%p/energy_uj", RUN+="/bin/chmod 0440 /sys%p/energy_uj"

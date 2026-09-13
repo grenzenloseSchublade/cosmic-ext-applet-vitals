@@ -16,8 +16,12 @@ pub struct Config {
     pub show_net: bool,
     pub show_gpu: bool,
     pub show_fans: bool,
+    /// Leistungsaufnahme (System/CPU/GPU in Watt) im Popup zeigen.
+    pub show_power: bool,
+    /// Akku-Zeile (Spannung, Ladezustand) im Popup zeigen.
+    pub show_battery: bool,
     /// Reihenfolge der Metriken im Popup als IDs (siehe `MetricKind` in app.rs).
-    /// 0=CPU, 1=RAM, 2=Netz, 3=GPU, 4=Lüfter, 5=Kerne.
+    /// 0=CPU, 1=RAM, 2=Netz, 3=GPU, 4=Lüfter, 5=Kerne, 6=Watt, 7=Akku.
     pub metric_order: Vec<u8>,
     /// Temperatur in °F statt °C.
     pub fahrenheit: bool,
@@ -50,7 +54,9 @@ impl Default for Config {
             show_net: true,
             show_gpu: true,
             show_fans: true,
-            metric_order: vec![0, 1, 2, 3, 4, 5],
+            show_power: true,
+            show_battery: false,
+            metric_order: vec![0, 1, 2, 3, 4, 5, 6, 7],
             fahrenheit: false,
             net_unit: 0,
             mono_font: true,

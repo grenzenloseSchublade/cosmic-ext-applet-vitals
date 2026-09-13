@@ -5,6 +5,7 @@
 // Deltas/Raten berechnet werden können.
 
 pub mod gpu;
+pub mod power;
 
 use crate::hw;
 use std::fs;
@@ -27,6 +28,7 @@ pub struct Metrics {
     /// Typ der aktiven Schnittstelle (WLAN/LAN/VPN) — lesbarer als der rohe Iface-Name.
     pub net_kind: Option<&'static str>,
     pub gpu: gpu::GpuInfo,
+    pub power: power::PowerInfo,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -42,6 +44,7 @@ pub struct Collector {
     prev_net: Option<(u64, u64, Instant)>,
     iface: Option<String>,
     gpu: gpu::GpuReader,
+    power: power::PowerReader,
     /// Wird beim Suspend gesetzt (Reserve für logind-Integration); pausiert GPU-Reads.
     pub paused: bool,
 }
@@ -54,6 +57,7 @@ impl Collector {
             prev_net: None,
             iface: None,
             gpu: gpu::GpuReader::new(),
+            power: power::PowerReader::new(),
             paused: false,
         }
     }
@@ -115,6 +119,13 @@ impl Collector {
                 self.prev_net = Some((rx, tx, now));
             }
         }
+
+        // --- Leistung (RAPL + Akku) ---
+        // Nach Suspend Zählerzustand verwerfen, damit kein Delta über die Schlafphase entsteht.
+        if self.paused {
+            self.power.reset();
+        }
+        m.power = self.power.read();
 
         // --- GPU (NVML nur wenn dGPU wach, Live gewünscht & nicht pausiert) ---
         m.gpu = self.gpu.read(gpu_live && !self.paused);

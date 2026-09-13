@@ -27,7 +27,7 @@ So bleibt das Applet leichtgewichtig und ist die direkte Antwort auf den Suspend
 ## Anzeige
 
 - **Panel:** symbolisches Chip-Icon, optional mit kompaktem Wert daneben (z. B. `CPU 12%` oder `↓1.2M/s ↑0.1M/s`, nur horizontale Leiste). Die Applet-Fläche **wächst dynamisch** mit dem Text (via `core.applet.autosize_window`).
-- **Popup (Details):** CPU (gesamt + Temp, optional pro Kern), RAM (genutzt/gesamt + Temp), Netz (↓/↑ + Typ **WLAN/LAN/VPN**), GPU (bei aktiver dGPU Last + VRAM + Temp; sonst Zustand/Modus), Lüfterdrehzahlen. Optional als **Auslastungsbalken** (zweizeilig, volle Breite) für CPU/RAM/GPU.
+- **Popup (Details):** CPU (gesamt + Temp, optional pro Kern), RAM (genutzt/gesamt + Temp), Netz (↓/↑ + Typ **WLAN/LAN/VPN**), GPU (bei aktiver dGPU Last + VRAM + Temp; sonst Zustand/Modus), Lüfterdrehzahlen, **Leistungsaufnahme** (System gesamt / CPU-Paket / GPU in Watt — siehe *Leistungsmessung (RAPL)* unten) sowie optional eine **Akku-Zeile** (Spannung, Ladezustand, Lade-/Entladeleistung). Optional als **Auslastungsbalken** (zweizeilig, volle Breite) für CPU/RAM/GPU.
 
 ## Datenquellen
 
@@ -42,7 +42,9 @@ So bleibt das Applet leichtgewichtig und ist die direkte Antwort auf den Suspend
 | Netz-Typ | WLAN (`…/<if>/wireless`), VPN (`tun`/`tap`/`wg`/`ppp`), sonst LAN |
 | dGPU-Zustand | `/sys/bus/pci/devices/<nvidia>/power/runtime_status` |
 | NVIDIA-Modus | `/etc/prime-discrete` |
-| GPU-Last/Temp/VRAM | NVML (`libnvidia-ml`, `memory_info()`) — nur wenn dGPU aktiv |
+| GPU-Last/Temp/VRAM/Watt | NVML (`libnvidia-ml`, `memory_info()`, `power_usage()`) — nur wenn dGPU aktiv |
+| System-/CPU-Paket-Leistung | RAPL `/sys/class/powercap` (`psys` / `package-0`, Zählerdelta) — braucht die Opt-in-udev-Regel, siehe unten |
+| Akku-Spannung/-Leistung/-Status | `/sys/class/power_supply/BAT*/{voltage_now,power_now,status}` |
 
 ## Hardware-Anpassung
 
@@ -60,6 +62,21 @@ Eigene hwmon-Chipnamen herausfinden:
 for f in /sys/class/hwmon/hwmon*/name; do echo "$f -> $(cat "$f")"; done
 grep . /sys/class/hwmon/hwmon*/temp*_label
 ```
+
+## Leistungsmessung (RAPL)
+
+Die Watt-Zeile zeigt bis zu drei Werte: **System gesamt**, **CPU-Paket** (inkl. iGPU) und **GPU**. System und CPU stammen aus den Intel/AMD-**RAPL**-Energiezählern unter `/sys/class/powercap` (`psys` und `package-0`, berechnet als Zählerdelta pro Tick, Überlauf wird behandelt).
+
+**Rechte:** Seit Kernel 5.10 ist `energy_uj` nur noch für **root** lesbar — die Mitigation für [CVE-2020-8694](https://nvd.nist.gov/vuln/detail/CVE-2020-8694) („PLATYPUS", ein Power-Seitenkanal, über den auf Mehrbenutzer-Systemen Geheimnisse anderer Nutzer leaken können). Vitals liefert deshalb eine **Opt-in**-udev-Regel mit, die die Zähler nur für Mitglieder einer eigenen Gruppe `rapl` freigibt (Modus 0440 — bewusst **nicht** world-readable):
+
+```sh
+just install-rapl-rule    # legt Gruppe "rapl" an, fügt dich hinzu, installiert die udev-Regel
+# danach: einmal ab-/anmelden (Gruppenmitgliedschaft), Applet neu starten
+```
+
+**Abwägung:** Auf einem Einzelnutzer-Laptop ist das Risiko gering; auf geteilten/Mehrbenutzer-Maschinen die Regel besser **nicht** installieren. Entfernen: `just uninstall-rapl-rule`.
+
+**Ohne die Regel** degradiert das Applet sauber: Im Akkubetrieb fällt der Gesamtwert auf die Entladeleistung des Akkus zurück (`power_now`); am Netz wird bewusst kein Gesamtwert gezeigt („– · Netz"), weil der Akku dann nur die Laderate misst. Der GPU-Wert ist RAPL-unabhängig (NVML, nur bei wacher dGPU und offenem Popup — die dGPU wird weiterhin **nie** geweckt). Beim Laden schätzt die Akku-Zeile zusätzlich den **Zug am Netzteil** (`psys` + Ladeleistung; Wandlerverluste nicht enthalten). Eine echte Messung des USB-C-Netzteil-Ausgangs ist nicht möglich — der PD-Controller (UCSI) meldet nur den ausgehandelten Vertrag, keine Live-Werte. Die echte CPU-Kernspannung (Vcore) ist auf modernen Laptops ohne root-/MSR-Zugriff nicht verfügbar; angezeigt wird nur die Akku-Spannung.
 
 ## Datenschutz — kein Heimtelefonieren
 
@@ -112,7 +129,7 @@ Im Detail-Popup oben rechts das **Zahnrad** anklicken → Einstellungs-Ansicht (
 
 - **Metriken & Reihenfolge:** je Metrik ein Schalter (an/aus) plus **▲/▼** zum Umsortieren. Die Reihenfolge gilt sofort für die Werteliste und wird persistiert (`metric_order`).
 - **Anzeige:** CPU-Temperatur, °C/°F, Monospace-Schrift, „GPU im Schlaf ausblenden", **Netz-Einheit** (Klick zykliert SI → binär → Bit).
-- **Darstellung:** **Balken im Popup** (grafische Auslastung für CPU/RAM/GPU statt Text), **Wert neben dem Panel-Icon** (kompakt, nur in horizontaler Leiste) sowie **Panel-Wert** (welche Metrik dort steht: CPU/RAM/Netz/GPU).
+- **Darstellung:** **Balken im Popup** (grafische Auslastung für CPU/RAM/GPU statt Text), **Wert neben dem Panel-Icon** (kompakt, nur in horizontaler Leiste) sowie **Panel-Wert** (welche Metrik dort steht: CPU/RAM/Netz/GPU/Watt).
 - **Aktualisierung:** Intervall in ms (Schritt 250, min 250).
 - **Auf Standard zurücksetzen:** alle Optionen (inkl. Reihenfolge) auf die Defaults.
 
@@ -129,13 +146,15 @@ Persistiert über cosmic-config (live, ohne Neustart). Optionen u. a.:
 | `fahrenheit` | Temperatur in °F | aus |
 | `net_unit` | 0 = MB/s, 1 = MiB/s, 2 = Mbit/s | 0 |
 | `show_fans` | Lüfterzeile im Popup | an |
+| `show_power` | Watt-Zeile (System/CPU/GPU) im Popup | an |
+| `show_battery` | Akku-Zeile (Spannung, Status) im Popup | aus |
 | `mono_font` | Monospace-Font in der Werteliste | an |
 | `hide_gpu_when_asleep` | dGPU im Schlaf ganz ausblenden | aus |
 | `per_core` | CPU pro Kern im Popup | an |
-| `metric_order` | Reihenfolge der Metriken (IDs: 0=CPU,1=RAM,2=Netz,3=GPU,4=Lüfter,5=Kerne) | `[0,1,2,3,4,5]` |
+| `metric_order` | Reihenfolge der Metriken (IDs: 0=CPU,1=RAM,2=Netz,3=GPU,4=Lüfter,5=Kerne,6=Watt,7=Akku) | `[0,1,2,3,4,5,6,7]` |
 | `graphical` | Auslastungsbalken im Popup (CPU/RAM/GPU) | aus |
 | `panel_text` | Kompakter Wert neben dem Panel-Icon (nur horizontale Leiste) | aus |
-| `panel_metric` | Welche Metrik im Panel-Text (0=CPU,1=RAM,2=Netz,3=GPU) | 0 |
+| `panel_metric` | Welche Metrik im Panel-Text (0=CPU,1=RAM,2=Netz,3=GPU,6=Watt) | 0 |
 | `warn_temp_c` / `crit_temp_c` | Schwellen für Farbwarnungen | 80 / 90 |
 
 Konfigdatei: `~/.config/cosmic/io.github.grenzenloseschublade.CosmicAppletVitals/v1/`.

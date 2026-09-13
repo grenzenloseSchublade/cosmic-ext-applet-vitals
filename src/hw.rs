@@ -54,6 +54,24 @@ pub const DISPLAY_CLASS_PREFIX: &str = "0x03";
 /// Relativer Pfad zum RTD3-Laufzeitzustand eines PCI-Geräts (`active` | `suspended`).
 pub const RUNTIME_STATUS_REL: &str = "power/runtime_status";
 
+// ---- Energie / RAPL / Akku ----
+
+/// Basis der RAPL-Zonen (Intel/AMD Energie-Zähler).
+pub const POWERCAP_DIR: &str = "/sys/class/powercap";
+/// Zonen-`name` des CPU-Pakets (inkl. iGPU). Über den Namen matchen, nicht über
+/// `intel-rapl:N` — die Nummerierung variiert je nach System.
+pub const RAPL_PKG_ZONE: &str = "package-0";
+/// Zonen-`name` der Gesamt-Plattform (nicht auf jeder Hardware vorhanden).
+pub const RAPL_PSYS_ZONE: &str = "psys";
+/// Energie-Zähler in µJ (root-only ohne udev-Regel — siehe README).
+pub const RAPL_ENERGY_FILE: &str = "energy_uj";
+/// Wrap-Grenze des Zählers.
+pub const RAPL_MAX_ENERGY_FILE: &str = "max_energy_range_uj";
+/// Basis der Netzteile/Akkus.
+pub const POWER_SUPPLY_DIR: &str = "/sys/class/power_supply";
+/// Unplausibel hohe Leistungswerte verwerfen (z. B. Spike nach Resume).
+pub const POWER_SANITY_MAX_W: f32 = 1000.0;
+
 // ---- Netz ----
 
 /// Basis der Netzwerk-Schnittstellen.
