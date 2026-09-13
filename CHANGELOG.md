@@ -1,5 +1,22 @@
 # Changelog
 
+## Unveröffentlicht
+
+- **Neue Metrik „Watt":** Leistungsaufnahme System gesamt (RAPL `psys`,
+  Fallback Akku-Entladeleistung), CPU-Paket (RAPL `package-0`) und GPU
+  (NVML `power_usage()`, weiterhin nur bei wacher dGPU — kein Wecken).
+- **Neue Metrik „Akku"** (optional, standardmäßig aus): Spannung, Ladezustand,
+  Lade-/Entladeleistung; beim Laden Näherung „Netzteil ≈ psys + Ladeleistung".
+- **RAPL-Freigabe als Opt-in:** udev-Regel (Gruppe `rapl`, 0440) via
+  `just install-rapl-rule`; ohne Regel saubere Degradation
+  (CVE-2020-8694-Abwägung im README).
+- Panel-Wert kann jetzt auch „Watt" zeigen; Zyklus-Logik über die
+  PANEL-Position statt roher ID (Bugfix für nicht-lückenlose IDs).
+- Gespeicherte `metric_order` wird beim Laden um neue Metrik-IDs ergänzt —
+  bestehende Einstellungen bleiben erhalten (kein Config-Versions-Bump).
+- Packaging: metainfo.xml einheitlich nach `share/metainfo`; eingecheckte
+  Debug-Binaries entfernt.
+
 ## 1.0.0 — 2026-06-25
 
 Erste stabile Version.
