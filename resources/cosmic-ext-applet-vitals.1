@@ -1,12 +1,18 @@
-.TH COSMIC-EXT-APPLET-VITALS 1 "2026-06-25" "0.9.0" "User Commands"
+.TH COSMIC-EXT-APPLET-VITALS 1 "2026-09-13" "1.0.0" "User Commands"
 .SH NAME
 cosmic-ext-applet-vitals \- robustes System-Monitor-Applet für COSMIC
 .SH SYNOPSIS
 .B cosmic-ext-applet-vitals
 .SH DESCRIPTION
 Panel-/Dock-Applet für die COSMIC-Desktop-Umgebung. Zeigt CPU-/RAM-Auslastung,
-Temperaturen, Netzdurchsatz, Lüfter und NVIDIA-GPU-Status; ein Klick öffnet ein
-Detail-Popup mit Einstellungen (Metriken, Reihenfolge, Einheiten, Darstellung).
+Temperaturen, Netzdurchsatz, Lüfter, NVIDIA-GPU-Status, Leistungsaufnahme
+(System/CPU/GPU in Watt) und optional den Akku (Spannung, Ladezustand); ein
+Klick öffnet ein Detail-Popup mit Einstellungen (Metriken, Reihenfolge,
+Einheiten, Darstellung).
+.PP
+Die RAPL-basierten Watt-Werte (System gesamt, CPU-Paket) benötigen eine
+Opt-in-udev-Regel (\fBjust install-rapl-rule\fR, siehe README) \(em ohne sie
+fällt die Anzeige auf die Akku-Entladeleistung zurück.
 .PP
 Das Applet wird nicht direkt auf der Kommandozeile benutzt, sondern in COSMIC
 über Einstellungen \(-> Leiste/Dock \(-> Applets hinzugefügt.

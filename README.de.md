@@ -92,7 +92,17 @@ cargo build --release         # oder: just build-release
 
 ## Installieren
 
-**A) Aus dem Quellcode — benutzer-lokal (ohne sudo, empfohlen für den Eigengebrauch):**
+**A) Fertiges `.deb` (amd64) — am einfachsten:**
+
+Das `.deb` vom [aktuellen Release](https://github.com/grenzenloseSchublade/cosmic-ext-applet-vitals/releases/latest) herunterladen und installieren:
+
+```sh
+sudo apt install ./cosmic-ext-applet-vitals_1.0.0_amd64.deb
+```
+
+Das vorgebaute Binary zielt auf **amd64** mit aktueller glibc (Klasse Pop!_OS / Ubuntu 24.04+ / Debian 13+). libcosmic ist statisch gelinkt; dynamisch werden nur Systembibliotheken benötigt (`libc6`, `libgcc-s1`, `libxkbcommon0`). Es ist **architektur**-spezifisch, nicht maschinenspezifisch — hwmon-Chips werden zur Laufzeit erkannt, mit sauberem Fallback.
+
+**B) Aus dem Quellcode — benutzer-lokal (ohne sudo, empfohlen für den Eigengebrauch):**
 
 ```sh
 ./install.sh                  # oder: just install-user
@@ -100,7 +110,7 @@ cargo build --release         # oder: just build-release
 
 Installiert Binary nach `~/.local/bin`, `.desktop` nach `~/.local/share/applications`. System-weit: `sudo just install` (prefix=/usr).
 
-**B) Eigenes `.deb` bauen:**
+**C) Eigenes `.deb` bauen:**
 
 ```sh
 sudo apt install debhelper pkg-config libxkbcommon-dev libwayland-dev   # einmalig
@@ -110,7 +120,7 @@ sudo apt install ../cosmic-ext-applet-vitals_1.0.0_*.deb
 
 Voraussetzung ist eine aktuelle Rust-Toolchain (`cargo`/`rustc`); der Build holt die Crates aus dem Netz. Das Packaging liegt unter [`debian/`](debian/) (natives Format).
 
-**C) PPA / `.deb`-Release:** *geplant* — eine Launchpad-PPA für bequeme `apt`-Updates ist für die Zukunft vorgesehen, aber noch nicht eingerichtet.
+**D) PPA:** *geplant* — eine Launchpad-PPA für bequeme `apt`-Updates ist für die Zukunft vorgesehen, aber noch nicht eingerichtet.
 
 ## Distribution — und warum kein Flatpak
 

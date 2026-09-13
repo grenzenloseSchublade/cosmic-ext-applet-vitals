@@ -9,7 +9,7 @@ base-dir := absolute_path(clean(rootdir / prefix))
 cargo-target-dir := env('CARGO_TARGET_DIR', 'target')
 bin-dst := base-dir / 'bin' / name
 desktop-dst := base-dir / 'share' / 'applications' / appid + '.desktop'
-appdata-dst := base-dir / 'share' / 'metainfo' / appid + '.metainfo.xml'
+metainfo-dst := base-dir / 'share' / 'metainfo' / appid + '.metainfo.xml'
 icon-dst := base-dir / 'share' / 'icons' / 'hicolor' / 'scalable' / 'apps' / appid + '.svg'
 
 # Standard: Release-Build
@@ -35,7 +35,7 @@ run *args:
 install:
     install -Dm0755 {{ cargo-target-dir / 'release' / name }} {{bin-dst}}
     install -Dm0644 resources/app.desktop {{desktop-dst}}
-    install -Dm0644 resources/app.metainfo.xml {{appdata-dst}}
+    install -Dm0644 resources/app.metainfo.xml {{metainfo-dst}}
     install -Dm0644 resources/icon.svg {{icon-dst}}
 
 # User-Installation nach ~/.local (kein sudo) — Standard für dich
@@ -47,7 +47,7 @@ install-user: build-release
     @echo "Installiert nach ~/.local. In COSMIC: Einstellungen → Leiste/Dock → Applets → Vitals."
 
 uninstall:
-    rm -f {{bin-dst}} {{desktop-dst}} {{icon-dst}} {{appdata-dst}}
+    rm -f {{bin-dst}} {{desktop-dst}} {{icon-dst}} {{metainfo-dst}}
     rm -f {{ base-dir / 'share/appdata' / appid + '.metainfo.xml' }}  # Altpfad früherer Versionen
 
 uninstall-user:

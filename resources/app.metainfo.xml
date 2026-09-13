@@ -7,8 +7,9 @@
   <summary>Robustes System-Monitor-Applet für COSMIC</summary>
   <description>
     <p>
-      Zeigt CPU- und RAM-Auslastung, Temperaturen, Netzwerk-Durchsatz sowie
-      NVIDIA-GPU-Status im COSMIC-Panel oder -Dock. Liest ausschließlich /proc und
+      Zeigt CPU- und RAM-Auslastung, Temperaturen, Netzwerk-Durchsatz,
+      NVIDIA-GPU-Status, Leistungsaufnahme (System/CPU/GPU in Watt) und optional
+      den Akku im COSMIC-Panel oder -Dock. Liest ausschließlich /proc und
       /sys und startet niemals einen Subprozess; die NVIDIA-dGPU wird nur abgefragt,
       wenn sie ohnehin wach ist — daher batterieschonend und suspend-fest.
     </p>
