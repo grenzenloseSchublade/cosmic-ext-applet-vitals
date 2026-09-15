@@ -51,8 +51,13 @@ pub struct Config {
     pub per_core: bool,
     /// Grafische Auslastungsbalken im Popup (statt nur Text) für CPU/RAM/GPU.
     pub graphical: bool,
-    /// Verlaufs-Graphen (Sparklines) im Popup unter CPU/RAM/Netz/Watt.
+    /// Verlaufs-Graphen (Sparklines) im Popup — Master-Schalter.
     pub show_graphs: bool,
+    /// Sparkline je Metrik (wirkt nur bei aktivem Master-Schalter).
+    pub graph_cpu: bool,
+    pub graph_mem: bool,
+    pub graph_net: bool,
+    pub graph_power: bool,
     /// Metrik-Beschriftungen im Popup in der System-Akzentfarbe (dezente
     /// Struktur; Warnfarben Orange/Rot bleiben den Schwellen vorbehalten).
     pub accent_labels: bool,
@@ -75,11 +80,11 @@ impl Default for Config {
             show_power: true,
             power_breakdown: true,
             show_battery: false,
-            show_disk: true,
-            show_swap: true,
-            show_load: true,
-            show_uptime: true,
-            show_net_total: true,
+            show_disk: false,
+            show_swap: false,
+            show_load: false,
+            show_uptime: false,
+            show_net_total: false,
             metric_order: vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
             fahrenheit: false,
             net_unit: 0,
@@ -90,6 +95,10 @@ impl Default for Config {
             per_core: true,
             graphical: false,
             show_graphs: true,
+            graph_cpu: true,
+            graph_mem: true,
+            graph_net: true,
+            graph_power: true,
             accent_labels: true,
             panel_text: false,
             panel_metric: 0,

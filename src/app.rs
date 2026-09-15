@@ -255,6 +255,10 @@ pub enum Message {
     SetInterval(u64),
     SetGraphical(bool),
     SetGraphs(bool),
+    SetGraphCpu(bool),
+    SetGraphMem(bool),
+    SetGraphNet(bool),
+    SetGraphPower(bool),
     SetAccentLabels(bool),
     /// Surface-Aktionen der Wayland-Tooltips (an libcosmic durchgereicht).
     Surface(cosmic::surface::Action),
@@ -463,6 +467,10 @@ impl cosmic::Application for AppModel {
             }
             Message::SetGraphical(v) => self.persist(move |c, h| c.set_graphical(h, v)),
             Message::SetGraphs(v) => self.persist(move |c, h| c.set_show_graphs(h, v)),
+            Message::SetGraphCpu(v) => self.persist(move |c, h| c.set_graph_cpu(h, v)),
+            Message::SetGraphMem(v) => self.persist(move |c, h| c.set_graph_mem(h, v)),
+            Message::SetGraphNet(v) => self.persist(move |c, h| c.set_graph_net(h, v)),
+            Message::SetGraphPower(v) => self.persist(move |c, h| c.set_graph_power(h, v)),
             Message::SetAccentLabels(v) => self.persist(move |c, h| c.set_accent_labels(h, v)),
             Message::Surface(a) => {
                 return cosmic::task::message(cosmic::Action::Cosmic(
@@ -662,7 +670,7 @@ impl AppModel {
                     c.accent_labels,
                     self.popup,
                 )];
-                if c.show_graphs {
+                if c.show_graphs && c.graph_cpu {
                     rows.push(sparkline(
                         vec![self.history.cpu.iter().copied().collect()],
                         Some(100.0),
@@ -683,7 +691,7 @@ impl AppModel {
                     c.accent_labels,
                     self.popup,
                 )];
-                if c.show_graphs {
+                if c.show_graphs && c.graph_mem {
                     rows.push(sparkline(
                         vec![self.history.mem.iter().copied().collect()],
                         Some(100.0),
@@ -707,7 +715,7 @@ impl AppModel {
                     c.accent_labels,
                     self.popup,
                 )];
-                if c.show_graphs {
+                if c.show_graphs && c.graph_net {
                     // ↓ voll, ↑ gedimmt; gemeinsames Maximum (autoskaliert).
                     rows.push(sparkline(
                         vec![
@@ -830,7 +838,7 @@ impl AppModel {
                     c.accent_labels,
                     self.popup,
                 )];
-                if c.show_graphs {
+                if c.show_graphs && c.graph_power {
                     rows.push(sparkline(
                         vec![self.history.power.iter().copied().collect()],
                         None,
@@ -1059,6 +1067,34 @@ impl AppModel {
             "Zeigt unter CPU, RAM, Netz und Watt einen Mini-Verlauf der letzten ~3 Minuten; die Historie läuft auch bei geschlossenem Popup mit.",
             c.show_graphs,
             Message::SetGraphs,
+        );
+        let display2_section = toggle_item(
+            display2_section,
+            "· Verlauf CPU",
+            "Sparkline unter der CPU-Zeile (nur bei aktiven Verlaufs-Graphen).",
+            c.graph_cpu,
+            Message::SetGraphCpu,
+        );
+        let display2_section = toggle_item(
+            display2_section,
+            "· Verlauf RAM",
+            "Sparkline unter der RAM-Zeile (nur bei aktiven Verlaufs-Graphen).",
+            c.graph_mem,
+            Message::SetGraphMem,
+        );
+        let display2_section = toggle_item(
+            display2_section,
+            "· Verlauf Netz",
+            "Sparkline unter der Netz-Zeile: ↓ voll, ↑ gedimmt (nur bei aktiven Verlaufs-Graphen).",
+            c.graph_net,
+            Message::SetGraphNet,
+        );
+        let display2_section = toggle_item(
+            display2_section,
+            "· Verlauf Watt",
+            "Sparkline unter der Watt-Zeile (nur bei aktiven Verlaufs-Graphen).",
+            c.graph_power,
+            Message::SetGraphPower,
         );
         let display2_section = toggle_item(
             display2_section,
