@@ -710,13 +710,13 @@ impl AppModel {
                     self.popup,
                 )];
                 if c.show_graphs && c.graph_cpu {
-                    rows.push(sparkline(
-                        vec![self.history.cpu.iter().copied().collect()],
-                        Some(100.0),
-                        None,
-                        self.history_span_s(),
-                        Box::new(|v| format!("{v:.0} %")),
-                    ));
+                    rows.push(sparkline(SparkSpec {
+                        series: vec![series_of(&self.history.cpu)],
+                        fixed_max: Some(100.0),
+                        caption_max: None,
+                        span_s: self.history_span_s(),
+                        format_value: Box::new(|v| format!("{v:.0} %")),
+                    }));
                 }
                 rows
             }
@@ -734,13 +734,13 @@ impl AppModel {
                     self.popup,
                 )];
                 if c.show_graphs && c.graph_mem {
-                    rows.push(sparkline(
-                        vec![self.history.mem.iter().copied().collect()],
-                        Some(100.0),
-                        None,
-                        self.history_span_s(),
-                        Box::new(|v| format!("{v:.0} %")),
-                    ));
+                    rows.push(sparkline(SparkSpec {
+                        series: vec![series_of(&self.history.mem)],
+                        fixed_max: Some(100.0),
+                        caption_max: None,
+                        span_s: self.history_span_s(),
+                        format_value: Box::new(|v| format!("{v:.0} %")),
+                    }));
                 }
                 rows
             }
@@ -762,25 +762,21 @@ impl AppModel {
                 )];
                 if c.show_graphs && c.graph_net {
                     // ↓ voll, ↑ gedimmt; gemeinsames Maximum (autoskaliert).
-                    let peak = self
-                        .history
-                        .net_down
-                        .iter()
-                        .chain(self.history.net_up.iter())
-                        .fold(0.0f32, |a, &v| a.max(v));
-                    rows.push(sparkline(
-                        vec![
-                            self.history.net_down.iter().copied().collect(),
-                            self.history.net_up.iter().copied().collect(),
+                    let peak =
+                        peak_of(self.history.net_down.iter().chain(self.history.net_up.iter()));
+                    rows.push(sparkline(SparkSpec {
+                        series: vec![
+                            series_of(&self.history.net_down),
+                            series_of(&self.history.net_up),
                         ],
-                        None,
-                        (peak > 0.0).then(|| fmt_rate(peak as f64, c)),
-                        self.history_span_s(),
-                        {
+                        fixed_max: None,
+                        caption_max: (peak > 0.0).then(|| fmt_rate(peak as f64, c)),
+                        span_s: self.history_span_s(),
+                        format_value: {
                             let unit = c.net_unit;
                             Box::new(move |v| fmt_rate_unit(v as f64, unit))
                         },
-                    ));
+                    }));
                 }
                 rows
             }
@@ -896,14 +892,14 @@ impl AppModel {
                     self.popup,
                 )];
                 if c.show_graphs && c.graph_power {
-                    let peak = self.history.power.iter().fold(0.0f32, |a, &v| a.max(v));
-                    rows.push(sparkline(
-                        vec![self.history.power.iter().copied().collect()],
-                        None,
-                        (peak > 0.0).then(|| format!("{peak:.0} W")),
-                        self.history_span_s(),
-                        Box::new(|v| format!("{v:.1} W")),
-                    ));
+                    let peak = peak_of(self.history.power.iter());
+                    rows.push(sparkline(SparkSpec {
+                        series: vec![series_of(&self.history.power)],
+                        fixed_max: None,
+                        caption_max: (peak > 0.0).then(|| format!("{peak:.0} W")),
+                        span_s: self.history_span_s(),
+                        format_value: Box::new(|v| format!("{v:.1} W")),
+                    }));
                 }
                 rows
             }
@@ -1553,6 +1549,50 @@ fn spark_stroke(color: cosmic::iced::Color) -> widget::canvas::Stroke<'static> {
         .with_line_cap(widget::canvas::LineCap::Round)
 }
 
+/// Hauchfeine gepunktete horizontale Regel-Linie über die volle Breite —
+/// die gemeinsame Punkt-Optik von Null-Linie (unten) und Max-Referenzlinie (oben).
+fn dotted_rule(frame: &mut widget::canvas::Frame, y: f32, w: f32, color: cosmic::iced::Color) {
+    use cosmic::iced::Point;
+    const DASH: [f32; 2] = [1.0, 3.0];
+    frame.stroke(
+        &widget::canvas::Path::line(Point::new(0.0, y), Point::new(w, y)),
+        widget::canvas::Stroke {
+            line_dash: widget::canvas::LineDash {
+                segments: &DASH,
+                offset: 0,
+            },
+            ..spark_stroke(color).with_width(1.0)
+        },
+    );
+}
+
+/// Kurvenpfad einer Serie: move_to zum ersten Punkt, line_to zu allen weiteren.
+/// Mit `close_to_base = Some(base)` wird der Pfad zusätzlich über die
+/// Basislinie geschlossen → gefüllte Fläche unter der Kurve.
+fn curve_path(
+    data: &[f32],
+    x_of: impl Fn(usize) -> f32,
+    y_of: impl Fn(f32) -> f32,
+    close_to_base: Option<f32>,
+) -> widget::canvas::Path {
+    use cosmic::iced::Point;
+    widget::canvas::Path::new(|b| {
+        if let Some(base) = close_to_base {
+            b.move_to(Point::new(x_of(0), base));
+            b.line_to(Point::new(x_of(0), y_of(data[0])));
+        } else {
+            b.move_to(Point::new(x_of(0), y_of(data[0])));
+        }
+        for (i, &v) in data.iter().enumerate().skip(1) {
+            b.line_to(Point::new(x_of(i), y_of(v)));
+        }
+        if let Some(base) = close_to_base {
+            b.line_to(Point::new(x_of(data.len() - 1), base));
+            b.close();
+        }
+    })
+}
+
 impl Sparkline {
     /// x-Position eines Sample-Index einer Serie der Länge `len`:
     /// die x-Achse ist auf `HISTORY_LEN` fixiert, kürzere Historie läuft
@@ -1627,6 +1667,7 @@ impl<Message> widget::canvas::Program<Message, cosmic::Theme> for Sparkline {
         bounds: Rectangle,
         _cursor: cosmic::iced::mouse::Cursor,
     ) -> Vec<widget::canvas::Geometry> {
+        use cosmic::iced::Point;
         use widget::canvas::{Frame, Path};
         let mut frame = Frame::new(renderer, bounds.size());
         let (w, h) = (bounds.width, bounds.height);
@@ -1650,24 +1691,10 @@ impl<Message> widget::canvas::Program<Message, cosmic::Theme> for Sparkline {
         let any_positive = self.series.iter().flatten().any(|&v| v > 0.0);
         let has_samples = self.series.first().is_some_and(|s| s.len() >= 2);
         if any_positive && has_samples {
-            const DASH: [f32; 2] = [1.0, 3.0];
-            let y = h - SPARK_HW;
             let mut rule_color: cosmic::iced::Color =
                 theme.cosmic().background.component.on.into();
             rule_color.a = 0.25;
-            frame.stroke(
-                &Path::line(
-                    cosmic::iced::Point::new(0.0, y),
-                    cosmic::iced::Point::new(w, y),
-                ),
-                widget::canvas::Stroke {
-                    line_dash: widget::canvas::LineDash {
-                        segments: &DASH,
-                        offset: 0,
-                    },
-                    ..spark_stroke(rule_color).with_width(1.0)
-                },
-            );
+            dotted_rule(&mut frame, h - SPARK_HW, w, rule_color);
         }
 
         for (si, data) in self.series.iter().enumerate() {
@@ -1682,26 +1709,12 @@ impl<Message> widget::canvas::Program<Message, cosmic::Theme> for Sparkline {
             color.a = alpha;
 
             if si == 0 {
-                let line = Path::new(|b| {
-                    b.move_to(cosmic::iced::Point::new(x_of(0), y_of(data[0])));
-                    for (i, &v) in data.iter().enumerate().skip(1) {
-                        b.line_to(cosmic::iced::Point::new(x_of(i), y_of(v)));
-                    }
-                });
+                let line = curve_path(data, x_of, y_of, None);
                 frame.stroke(&line, spark_stroke(color));
 
                 // Fläche unter der ersten Serie, sehr zart; endet an derselben
                 // Basislinie wie die Kurve (kein Haarspalt zur Linie).
-                let base = h - SPARK_HW;
-                let area = Path::new(|b| {
-                    b.move_to(cosmic::iced::Point::new(x_of(0), base));
-                    b.line_to(cosmic::iced::Point::new(x_of(0), y_of(data[0])));
-                    for (i, &v) in data.iter().enumerate().skip(1) {
-                        b.line_to(cosmic::iced::Point::new(x_of(i), y_of(v)));
-                    }
-                    b.line_to(cosmic::iced::Point::new(x_of(data.len() - 1), base));
-                    b.close();
-                });
+                let area = curve_path(data, x_of, y_of, Some(h - SPARK_HW));
                 let mut fill = accent;
                 fill.a = 0.12;
                 frame.fill(&area, fill);
@@ -1718,12 +1731,7 @@ impl<Message> widget::canvas::Program<Message, cosmic::Theme> for Sparkline {
                     if b_end <= a {
                         return;
                     }
-                    let seg = Path::new(|b| {
-                        b.move_to(cosmic::iced::Point::new(x_of(a), y_of(data[a])));
-                        for i in (a + 1)..=b_end {
-                            b.line_to(cosmic::iced::Point::new(x_of(i), y_of(data[i])));
-                        }
-                    });
+                    let seg = curve_path(&data[a..=b_end], |i| x_of(i + a), y_of, None);
                     frame.stroke(&seg, spark_stroke(color));
                 };
                 for (i, &v) in data.iter().enumerate() {
@@ -1748,24 +1756,9 @@ impl<Message> widget::canvas::Program<Message, cosmic::Theme> for Sparkline {
         // „Beschriftung gehört zur Oberkante" explizit. Nur bei autoskalierten
         // Graphen; bei fester 100-%-Skala wäre sie Rauschen.
         if self.caption_max.is_some() && has_data {
-            const DASH: [f32; 2] = [1.0, 3.0];
-            let y = SPARK_TEXT_ZONE + SPARK_HW;
-            let rule = Path::line(
-                cosmic::iced::Point::new(0.0, y),
-                cosmic::iced::Point::new(w, y),
-            );
             let mut rule_color = text_color;
             rule_color.a = 0.25;
-            frame.stroke(
-                &rule,
-                widget::canvas::Stroke {
-                    line_dash: widget::canvas::LineDash {
-                        segments: &DASH,
-                        offset: 0,
-                    },
-                    ..spark_stroke(rule_color).with_width(1.0)
-                },
-            );
+            dotted_rule(&mut frame, SPARK_TEXT_ZONE + SPARK_HW, w, rule_color);
         }
 
         // --- Hover: Crosshair + Marker + Werte in der Textzone ---
@@ -1786,17 +1779,14 @@ impl<Message> widget::canvas::Program<Message, cosmic::Theme> for Sparkline {
                     guide.a = 0.3;
                     frame.stroke(
                         &Path::line(
-                            cosmic::iced::Point::new(x, SPARK_TEXT_ZONE + SPARK_HW),
-                            cosmic::iced::Point::new(x, h - SPARK_HW),
+                            Point::new(x, SPARK_TEXT_ZONE + SPARK_HW),
+                            Point::new(x, h - SPARK_HW),
                         ),
                         spark_stroke(guide).with_width(1.0),
                     );
                     // Marker auf der Erstserie.
                     frame.fill(
-                        &Path::circle(
-                            cosmic::iced::Point::new(x, Self::y_of(h, max, first[idx])),
-                            2.5,
-                        ),
+                        &Path::circle(Point::new(x, Self::y_of(h, max, first[idx])), 2.5),
                         accent,
                     );
                     // Wert(e) + Zeit-Offset: „↓ 2,1 M/s ↑ 300 K/s · −45 s".
@@ -1841,7 +1831,7 @@ impl<Message> widget::canvas::Program<Message, cosmic::Theme> for Sparkline {
         if !caption.is_empty() {
             frame.fill_text(widget::canvas::Text {
                 content: caption,
-                position: cosmic::iced::Point::new(w - 2.0, 0.0),
+                position: Point::new(w - 2.0, 0.0),
                 color: cap_color,
                 size: cosmic::iced::Pixels(9.0),
                 align_x: cosmic::iced::alignment::Horizontal::Right.into(),
@@ -1853,23 +1843,39 @@ impl<Message> widget::canvas::Program<Message, cosmic::Theme> for Sparkline {
     }
 }
 
-/// Sparkline-Zeile unter einer Metrik (volle Breite, feste Höhe).
-/// `caption_max`: fertig formatiertes Skalen-Maximum (nur autoskalierte
-/// Graphen); `span_s`: Zeitfenster der Historie in Sekunden.
-fn sparkline<'a>(
+/// Ringpuffer-Historie → Serie für eine Sparkline.
+fn series_of(q: &VecDeque<f32>) -> Vec<f32> {
+    q.iter().copied().collect()
+}
+
+/// Spitzenwert eines Werte-Iterators (0, wenn leer) — für autoskalierte Graphen.
+fn peak_of<'a>(iter: impl Iterator<Item = &'a f32>) -> f32 {
+    iter.fold(0.0f32, |a, &v| a.max(v))
+}
+
+/// Parameter einer Sparkline-Zeile — benannte Felder statt fünf
+/// Positionsargumenten an den Callsites.
+struct SparkSpec {
     series: Vec<Vec<f32>>,
+    /// Normierungs-Maximum; `None` = gemeinsames Maximum der Serien (autoskaliert).
     fixed_max: Option<f32>,
+    /// Fertig formatiertes Skalen-Maximum für die Beschriftung (nur autoskaliert).
     caption_max: Option<String>,
+    /// Zeitfenster der Historie in Sekunden.
     span_s: u64,
+    /// Formatiert einen Rohwert der Serie für die Hover-Anzeige.
     format_value: Box<dyn Fn(f32) -> String>,
-) -> Element<'a, Message> {
+}
+
+/// Sparkline-Zeile unter einer Metrik (volle Breite, feste Höhe).
+fn sparkline<'a>(spec: SparkSpec) -> Element<'a, Message> {
     widget::canvas(Sparkline {
-        series,
-        fixed_max,
-        caption_max,
-        span_label: fmt_span(span_s),
-        span_s,
-        format_value,
+        series: spec.series,
+        fixed_max: spec.fixed_max,
+        caption_max: spec.caption_max,
+        span_label: fmt_span(spec.span_s),
+        span_s: spec.span_s,
+        format_value: spec.format_value,
     })
     .width(Length::Fill)
     .height(Length::Fixed(SPARK_HEIGHT))
