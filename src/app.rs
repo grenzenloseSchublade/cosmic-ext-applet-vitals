@@ -1564,10 +1564,18 @@ impl Sparkline {
 
     /// y-Position eines Werts. Zeichenbereich [Textzone + halbe Strichbreite,
     /// h - halbe Strichbreite]: oben bleibt die Beschriftung frei, unten wird
-    /// die Linie nie an der Canvas-Kante angeschnitten.
+    /// die Linie nie an der Canvas-Kante angeschnitten. Werte > 0 halten
+    /// zusätzlich einen Mindestabstand zur Basiskante — eine flache, basisnahe
+    /// Kurve (Watt im Leerlauf unter großem Fenster-Peak) verschmölze sonst
+    /// mit Flächen-Kante und Grundlinie zu einem dicken Balken.
     fn y_of(h: f32, max: f32, v: f32) -> f32 {
         let top = SPARK_TEXT_ZONE + SPARK_HW;
-        h - (v / max).clamp(0.0, 1.0) * (h - top - SPARK_HW) - SPARK_HW
+        let y = h - (v / max).clamp(0.0, 1.0) * (h - top - SPARK_HW) - SPARK_HW;
+        if v > 0.0 {
+            y.min(h - SPARK_HW - 2.5)
+        } else {
+            y
+        }
     }
 }
 
