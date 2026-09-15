@@ -51,6 +51,8 @@ pub struct Config {
     pub per_core: bool,
     /// Grafische Auslastungsbalken im Popup (statt nur Text) für CPU/RAM/GPU.
     pub graphical: bool,
+    /// Verlaufs-Graphen (Sparklines) im Popup unter CPU/RAM/Netz/Watt.
+    pub show_graphs: bool,
     /// Metrik-Beschriftungen im Popup in der System-Akzentfarbe (dezente
     /// Struktur; Warnfarben Orange/Rot bleiben den Schwellen vorbehalten).
     pub accent_labels: bool,
@@ -87,6 +89,7 @@ impl Default for Config {
             crit_temp_c: 90,
             per_core: true,
             graphical: false,
+            show_graphs: true,
             accent_labels: true,
             panel_text: false,
             panel_metric: 0,

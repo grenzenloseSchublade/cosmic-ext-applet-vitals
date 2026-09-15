@@ -2,6 +2,11 @@
 
 ## Unveröffentlicht
 
+- **Verlaufs-Graphen (Sparklines):** Mini-Verlauf (~3 min, 120 Samples) unter
+  CPU, RAM, Netz (↓ voll, ↑ gedimmt) und Watt — als Canvas in der
+  System-Akzentfarbe (Linie + zarte Fläche). Historie läuft auch bei
+  geschlossenem Popup mit (nur Delta-Metriken, die ohnehin erhoben werden);
+  neuer Schalter „Verlaufs-Graphen (Sparklines)" unter „Darstellung".
 - **Fünf neue Metriken** (alle einzeln abschaltbar, in „Metriken & Reihenfolge"
   sortierbar): **Disk** (Lese-/Schreibrate über physische Laufwerke,
   /proc/diskstats), **Swap** (nur sichtbar wenn eingerichtet), **Load**

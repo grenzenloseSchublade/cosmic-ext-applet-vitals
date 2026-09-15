@@ -12,6 +12,7 @@ use cosmic::iced::Rectangle;
 use cosmic::prelude::*;
 use cosmic::widget;
 use iced_runtime::platform_specific::wayland::popup::{SctkPopupSettings, SctkPositioner};
+use std::collections::VecDeque;
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
@@ -28,6 +29,10 @@ const CHIP_SYMBOLIC: &[u8] = include_bytes!("../resources/icon-symbolic.svg");
 
 /// Feste Breite der fetten Metrik-Beschriftung (linke Spalte im Popup).
 const LABEL_WIDTH: f32 = 60.0;
+/// Samples je Verlaufs-Graph (bei 1,5-s-Intervall ≈ 3 Minuten Historie).
+const HISTORY_LEN: usize = 120;
+/// Höhe der Sparklines.
+const SPARK_HEIGHT: f32 = 24.0;
 /// Höhe/Dicke der Auslastungsbalken.
 const BAR_GIRTH: f32 = 8.0;
 /// Panel-Icon-Vergrößerung gegenüber der vom Panel vorgeschlagenen Größe (innerhalb der Zelltiefe).
@@ -183,6 +188,34 @@ enum ViewMode {
     Settings,
 }
 
+/// Ringpuffer der Verlaufswerte für die Sparklines. Wird bei JEDEM Tick
+/// gefüllt (auch bei zugeklapptem Popup — nur so zeigt der Graph beim Öffnen
+/// echte Historie); enthält nur Delta-Metriken, die ohnehin immer laufen.
+#[derive(Default)]
+struct History {
+    cpu: VecDeque<f32>,
+    mem: VecDeque<f32>,
+    net_down: VecDeque<f32>,
+    net_up: VecDeque<f32>,
+    power: VecDeque<f32>,
+}
+
+impl History {
+    fn push(&mut self, m: &Metrics) {
+        let push = |q: &mut VecDeque<f32>, v: f32| {
+            if q.len() == HISTORY_LEN {
+                q.pop_front();
+            }
+            q.push_back(v);
+        };
+        push(&mut self.cpu, m.cpu_pct);
+        push(&mut self.mem, mem_pct(m));
+        push(&mut self.net_down, m.net_down_bps as f32);
+        push(&mut self.net_up, m.net_up_bps as f32);
+        push(&mut self.power, m.power.sys_w.unwrap_or(0.0));
+    }
+}
+
 pub struct AppModel {
     core: cosmic::Core,
     popup: Option<Id>,
@@ -197,6 +230,8 @@ pub struct AppModel {
     /// falls NVML einmal hängt).
     refreshing: bool,
     ui_mode: ViewMode,
+    /// Verlaufswerte für die Sparklines.
+    history: History,
 }
 
 #[derive(Debug, Clone)]
@@ -219,6 +254,7 @@ pub enum Message {
     CycleNetUnit,
     SetInterval(u64),
     SetGraphical(bool),
+    SetGraphs(bool),
     SetAccentLabels(bool),
     /// Surface-Aktionen der Wayland-Tooltips (an libcosmic durchgereicht).
     Surface(cosmic::surface::Action),
@@ -310,6 +346,7 @@ impl cosmic::Application for AppModel {
             metrics,
             refreshing: false,
             ui_mode: ViewMode::Metrics,
+            history: History::default(),
         };
         (app, Task::none())
     }
@@ -335,6 +372,7 @@ impl cosmic::Application for AppModel {
                 return self.spawn_refresh(self.popup.is_some());
             }
             Message::MetricsUpdated(m) => {
+                self.history.push(&m);
                 self.metrics = m;
                 self.refreshing = false;
             }
@@ -424,6 +462,7 @@ impl cosmic::Application for AppModel {
                 self.persist(move |c, h| c.set_interval_ms(h, ms));
             }
             Message::SetGraphical(v) => self.persist(move |c, h| c.set_graphical(h, v)),
+            Message::SetGraphs(v) => self.persist(move |c, h| c.set_show_graphs(h, v)),
             Message::SetAccentLabels(v) => self.persist(move |c, h| c.set_accent_labels(h, v)),
             Message::Surface(a) => {
                 return cosmic::task::message(cosmic::Action::Cosmic(
@@ -612,7 +651,7 @@ impl AppModel {
             MetricKind::Cpu => {
                 // links % · (mittig leer) · rechts Temp (eingefärbt nach Schwellen).
                 let temp = if c.show_cpu_temp { m.cpu_temp_c } else { None };
-                vec![metric_or_bar(
+                let mut rows = vec![metric_or_bar(
                     c.graphical,
                     "CPU",
                     m.cpu_pct / 100.0,
@@ -622,11 +661,18 @@ impl AppModel {
                     c.mono_font,
                     c.accent_labels,
                     self.popup,
-                )]
+                )];
+                if c.show_graphs {
+                    rows.push(sparkline(
+                        vec![self.history.cpu.iter().copied().collect()],
+                        Some(100.0),
+                    ));
+                }
+                rows
             }
             MetricKind::Mem => {
                 // links % · mittig GiB-Belegung · rechts RAM-Temp (eigener Sensor, optional).
-                vec![metric_or_bar(
+                let mut rows = vec![metric_or_bar(
                     c.graphical,
                     "RAM",
                     mem_pct(m) / 100.0,
@@ -636,13 +682,20 @@ impl AppModel {
                     c.mono_font,
                     c.accent_labels,
                     self.popup,
-                )]
+                )];
+                if c.show_graphs {
+                    rows.push(sparkline(
+                        vec![self.history.mem.iter().copied().collect()],
+                        Some(100.0),
+                    ));
+                }
+                rows
             }
             MetricKind::Net => {
                 // Typ (WLAN/LAN/VPN) statt rohem Iface-Namen, mit „·"-Trenner (wie GPU/RAM).
                 let kind = m.net_kind.map(|k| format!(" · {k}")).unwrap_or_default();
                 // Raten rechtsbündig in fester Zeichenbreite → mit Monospace springt die Breite nicht.
-                vec![labeled_row(
+                let mut rows = vec![labeled_row(
                     "Netz",
                     format!(
                         "↓ {:>8} ↑ {:>8}{}",
@@ -653,7 +706,18 @@ impl AppModel {
                     c.mono_font,
                     c.accent_labels,
                     self.popup,
-                )]
+                )];
+                if c.show_graphs {
+                    // ↓ voll, ↑ gedimmt; gemeinsames Maximum (autoskaliert).
+                    rows.push(sparkline(
+                        vec![
+                            self.history.net_down.iter().copied().collect(),
+                            self.history.net_up.iter().copied().collect(),
+                        ],
+                        None,
+                    ));
+                }
+                rows
             }
             MetricKind::Gpu => {
                 let g = &m.gpu;
@@ -759,7 +823,20 @@ impl AppModel {
                         parts.push(format!("GPU {w:.1}"));
                     }
                 }
-                vec![labeled_row("Watt", parts.join(" · "), c.mono_font, c.accent_labels, self.popup)]
+                let mut rows = vec![labeled_row(
+                    "Watt",
+                    parts.join(" · "),
+                    c.mono_font,
+                    c.accent_labels,
+                    self.popup,
+                )];
+                if c.show_graphs {
+                    rows.push(sparkline(
+                        vec![self.history.power.iter().copied().collect()],
+                        None,
+                    ));
+                }
+                rows
             }
             MetricKind::Battery => {
                 use crate::metrics::power::BatStatus;
@@ -975,6 +1052,13 @@ impl AppModel {
             "Zeigt Auslastung zusätzlich als Fortschrittsbalken statt nur als Zahl.",
             c.graphical,
             Message::SetGraphical,
+        );
+        let display2_section = toggle_item(
+            display2_section,
+            "Verlaufs-Graphen (Sparklines)",
+            "Zeigt unter CPU, RAM, Netz und Watt einen Mini-Verlauf der letzten ~3 Minuten; die Historie läuft auch bei geschlossenem Popup mit.",
+            c.show_graphs,
+            Message::SetGraphs,
         );
         let display2_section = toggle_item(
             display2_section,
@@ -1337,6 +1421,91 @@ fn mem_pct(m: &Metrics) -> f32 {
     } else {
         m.mem_used_kb as f32 / m.mem_total_kb as f32 * 100.0
     }
+}
+
+/// Sparkline-Verlauf als Canvas: Linie + zart gefüllte Fläche in der
+/// System-Akzentfarbe; zweite Serie (Netz ↑) gedimmt. Neueste Werte rechts,
+/// die x-Achse ist auf `HISTORY_LEN` fixiert — der Graph „läuft" von rechts ein.
+struct Sparkline {
+    series: Vec<Vec<f32>>,
+    /// Normierungs-Maximum; `None` = gemeinsames Maximum der Serien (autoskaliert).
+    fixed_max: Option<f32>,
+}
+
+impl<Message> widget::canvas::Program<Message, cosmic::Theme> for Sparkline {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &Self::State,
+        renderer: &cosmic::Renderer,
+        theme: &cosmic::Theme,
+        bounds: Rectangle,
+        _cursor: cosmic::iced::mouse::Cursor,
+    ) -> Vec<widget::canvas::Geometry> {
+        use widget::canvas::{Frame, Path, Stroke};
+        let mut frame = Frame::new(renderer, bounds.size());
+        let (w, h) = (bounds.width, bounds.height);
+        let max = self
+            .fixed_max
+            .unwrap_or_else(|| {
+                self.series
+                    .iter()
+                    .flatten()
+                    .fold(0.0f32, |a, &v| a.max(v))
+            })
+            .max(1e-6);
+        let accent: cosmic::iced::Color = theme.cosmic().accent_color().into();
+
+        for (si, data) in self.series.iter().enumerate() {
+            if data.len() < 2 {
+                continue;
+            }
+            let n = HISTORY_LEN.max(2) as f32;
+            // Von rechts einlaufen: fehlende Historie lässt links Leerraum.
+            let x_of = |i: usize| {
+                w * ((i + HISTORY_LEN - data.len()) as f32) / (n - 1.0)
+            };
+            let y_of = |v: f32| h - (v / max).clamp(0.0, 1.0) * (h - 1.0) - 0.5;
+
+            let line = Path::new(|b| {
+                b.move_to(cosmic::iced::Point::new(x_of(0), y_of(data[0])));
+                for (i, &v) in data.iter().enumerate().skip(1) {
+                    b.line_to(cosmic::iced::Point::new(x_of(i), y_of(v)));
+                }
+            });
+            // Erste Serie voll, weitere gedimmt (Netz ↑ neben ↓).
+            let alpha = if si == 0 { 1.0 } else { 0.45 };
+            let mut color = accent;
+            color.a = alpha;
+            frame.stroke(&line, Stroke::default().with_color(color).with_width(1.5));
+
+            if si == 0 {
+                // Fläche unter der ersten Serie, sehr zart.
+                let area = Path::new(|b| {
+                    b.move_to(cosmic::iced::Point::new(x_of(0), h));
+                    b.line_to(cosmic::iced::Point::new(x_of(0), y_of(data[0])));
+                    for (i, &v) in data.iter().enumerate().skip(1) {
+                        b.line_to(cosmic::iced::Point::new(x_of(i), y_of(v)));
+                    }
+                    b.line_to(cosmic::iced::Point::new(x_of(data.len() - 1), h));
+                    b.close();
+                });
+                let mut fill = accent;
+                fill.a = 0.12;
+                frame.fill(&area, fill);
+            }
+        }
+        vec![frame.into_geometry()]
+    }
+}
+
+/// Sparkline-Zeile unter einer Metrik (volle Breite, feste Höhe).
+fn sparkline<'a>(series: Vec<Vec<f32>>, fixed_max: Option<f32>) -> Element<'a, Message> {
+    widget::canvas(Sparkline { series, fixed_max })
+        .width(Length::Fill)
+        .height(Length::Fixed(SPARK_HEIGHT))
+        .into()
 }
 
 /// Uptime menschenlesbar: „3 d 4 h 12 min" (führende Null-Einheiten entfallen).
