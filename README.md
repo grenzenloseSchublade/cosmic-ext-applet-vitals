@@ -90,6 +90,24 @@ Requires: Rust (`cargo`), Wayland/xkb dev packages (for libcosmic).
 cargo build --release         # or: just build-release
 ```
 
+### UI layout model (for contributors)
+
+The UI is built with libcosmic/iced widgets, **not** HTML/CSS — but the layout model is close to CSS flexbox: `widget::row()` / `widget::column()` are flex containers (main axis horizontal/vertical), `.width(Length::Fill)` behaves like `flex-grow`, `Length::Shrink` like fit-content, fixed lengths like a px width. `.spacing()` is the gap between children, `.padding()` the inner padding, `.align_y(Alignment::Center)` cross-axis alignment. There are no CSS classes; styling comes from **theme classes** (e.g. `cosmic::theme::Container::Dropdown`) or custom style closures, which adapt to light/dark automatically. Conventions in this codebase:
+
+- Settings rows are `widget::settings::item_row(vec![label, control])`; the label takes `Length::Fill` so all controls share one right edge.
+- Horizontal indentation of headings and footer buttons is `theme::spacing().space_m` (see `padded_heading` in `src/app.rs`) — reuse it instead of hard-coding pixels.
+- All explanatory tooltips go through the `info_box` helper in `src/app.rs` — one place that defines their container class, padding and max width.
+
+### Measuring per-tick syscalls
+
+The collector's efficiency claims (cached hwmon/battery paths, popup-gated sensor reads) can be verified with `strace` — but attaching to a running process needs ptrace rights (Yama `ptrace_scope`), i.e. `sudo`:
+
+```sh
+sudo strace -f -e trace=openat -p $(pgrep -f cosmic-ext-applet-vitals | head -1) -o /tmp/vitals.strace &
+sleep 10; sudo pkill -x strace
+grep -c hwmon /tmp/vitals.strace   # expected: 0 while the popup is closed
+```
+
 ## Installing
 
 **A) Prebuilt `.deb` (amd64) — easiest:**
@@ -109,6 +127,17 @@ The prebuilt binary targets **amd64** with a recent glibc (Pop!_OS / Ubuntu 24.0
 ```
 
 Installs the binary to `~/.local/bin`, the `.desktop` file to `~/.local/share/applications`. System-wide: `sudo just install` (prefix=/usr).
+
+**Deploying a new build (restart the applet):** installing only replaces the file on disk — the running applet keeps executing the old (deleted) binary until it is restarted. `cosmic-panel` does **not** respawn a killed applet on its own; restart the panel instead (cosmic-session respawns it together with all applets):
+
+```sh
+just install-user
+kill $(pgrep -x cosmic-panel)     # session restarts panel + applets automatically
+# verify the new binary is running (no "(deleted)" suffix):
+for p in $(pgrep -f cosmic-ext-applet-vitals); do readlink /proc/$p/exe; done
+```
+
+Note: `pkill -f cosmic-ext-applet-vitals` is a trap in scripts — the pattern also matches the shell that runs the command, killing your own script. Filter by `/proc/<pid>/exe` as above instead.
 
 **C) Build your own `.deb`:**
 

@@ -40,6 +40,9 @@ pub struct Config {
     pub per_core: bool,
     /// Grafische Auslastungsbalken im Popup (statt nur Text) für CPU/RAM/GPU.
     pub graphical: bool,
+    /// Metrik-Beschriftungen im Popup in der System-Akzentfarbe (dezente
+    /// Struktur; Warnfarben Orange/Rot bleiben den Schwellen vorbehalten).
+    pub accent_labels: bool,
     /// Einen kompakten Wert direkt neben dem Panel-Icon anzeigen (nur horizontale Leiste).
     pub panel_text: bool,
     /// Welche Metrik im Panel-Text steht (0=CPU, 1=RAM, 2=Netz, 3=GPU).
@@ -68,6 +71,7 @@ impl Default for Config {
             crit_temp_c: 90,
             per_core: true,
             graphical: false,
+            accent_labels: true,
             panel_text: false,
             panel_metric: 0,
         }

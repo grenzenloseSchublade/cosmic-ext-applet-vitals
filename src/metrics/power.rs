@@ -89,12 +89,17 @@ impl RaplZone {
     }
 }
 
-/// Hält die entdeckten RAPL-Zonen; Akku wird pro Tick neu gescannt (Hot-Swap).
+/// Hält die entdeckten RAPL-Zonen und die gecachten Akku-Pfade.
 pub struct PowerReader {
     /// CPU-Paket (`package-0`).
     pkg: Option<RaplZone>,
     /// Ganze Plattform (`psys`) — nicht auf jeder Hardware vorhanden.
     psys: Option<RaplZone>,
+    /// Gecachte Akku-Pfade. `None` = (noch) nicht gescannt;
+    /// `Some(vec![])` = kein Akku vorhanden (gültiger Cache, z. B. Desktop).
+    bats: Option<Vec<PathBuf>>,
+    /// Countdown bis zum nächsten Verzeichnis-Rescan (Hot-Swap/Zweit-Akku).
+    bat_rescan: u32,
 }
 
 impl PowerReader {
@@ -102,6 +107,8 @@ impl PowerReader {
         Self {
             pkg: find_rapl_zone(hw::RAPL_PKG_ZONE),
             psys: find_rapl_zone(hw::RAPL_PSYS_ZONE),
+            bats: None,
+            bat_rescan: 0,
         }
     }
 
@@ -122,7 +129,7 @@ impl PowerReader {
         info.cpu_pkg_w = self.pkg.as_mut().and_then(RaplZone::read_watts);
         let psys_w = self.psys.as_mut().and_then(RaplZone::read_watts);
 
-        let bat = read_batteries();
+        let bat = self.read_batteries();
         info.bat_voltage_v = bat.voltage_v;
         info.bat_power_w = bat.power_w;
         info.bat_status = bat.status;
@@ -184,12 +191,55 @@ fn find_rapl_zone(want: &str) -> Option<RaplZone> {
     None
 }
 
-/// Scannt alle Akkus: Leistung wird über alle summiert (Zweit-Akku), Spannung
-/// und Status kommen vom ersten (alphabetisch, d. h. BAT0).
-fn read_batteries() -> BatteryReading {
-    let mut out = BatteryReading::default();
+impl PowerReader {
+    /// Liest alle Akkus über die gecachten Pfade: Leistung wird über alle
+    /// summiert (Zweit-Akku), Spannung und Status kommen vom ersten
+    /// (alphabetisch, d. h. BAT0). Das Verzeichnis wird nur beim ersten Mal
+    /// und danach alle `BAT_RESCAN_TICKS` neu gescannt (Hot-Swap); ein
+    /// Lesefehler auf einem gecachten Pfad (Akku entfernt) verwirft den Cache.
+    fn read_batteries(&mut self) -> BatteryReading {
+        if self.bats.is_none() || self.bat_rescan == 0 {
+            self.bats = Some(scan_batteries());
+            self.bat_rescan = hw::BAT_RESCAN_TICKS;
+        }
+        self.bat_rescan -= 1;
+
+        let mut out = BatteryReading::default();
+        let bats = self.bats.as_deref().unwrap_or(&[]);
+        let mut power_sum_uw: Option<u64> = None;
+        for (i, bat) in bats.iter().enumerate() {
+            if i == 0 {
+                out.voltage_v = read_u64(&bat.join("voltage_now")).map(|uv| uv as f32 / 1e6);
+                match fs::read_to_string(bat.join("status")) {
+                    Ok(s) => {
+                        out.status = match s.trim() {
+                            "Charging" => BatStatus::Charging,
+                            "Discharging" => BatStatus::Discharging,
+                            "Full" => BatStatus::Full,
+                            _ => BatStatus::Unknown,
+                        }
+                    }
+                    // Akku weg → Cache verwerfen, nächster Tick scannt neu.
+                    Err(_) => {
+                        self.bats = None;
+                        return BatteryReading::default();
+                    }
+                }
+            }
+            // Manche Akkus exportieren nur current_now — dann bleibt die Leistung leer.
+            if let Some(uw) = read_u64(&bat.join("power_now")) {
+                power_sum_uw = Some(power_sum_uw.unwrap_or(0) + uw);
+            }
+        }
+        out.power_w = power_sum_uw.map(|uw| uw as f32 / 1e6);
+        out
+    }
+}
+
+/// Voller Verzeichnis-Scan nach Akkus (`type == Battery`), sortiert (BAT0 zuerst).
+fn scan_batteries() -> Vec<PathBuf> {
     let Ok(dir) = fs::read_dir(hw::POWER_SUPPLY_DIR) else {
-        return out;
+        return Vec::new();
     };
     let mut bats: Vec<PathBuf> = dir
         .flatten()
@@ -199,27 +249,7 @@ fn read_batteries() -> BatteryReading {
         })
         .collect();
     bats.sort();
-
-    let mut power_sum_uw: Option<u64> = None;
-    for (i, bat) in bats.iter().enumerate() {
-        if i == 0 {
-            out.voltage_v = read_u64(&bat.join("voltage_now")).map(|uv| uv as f32 / 1e6);
-            out.status = fs::read_to_string(bat.join("status"))
-                .map(|s| match s.trim() {
-                    "Charging" => BatStatus::Charging,
-                    "Discharging" => BatStatus::Discharging,
-                    "Full" => BatStatus::Full,
-                    _ => BatStatus::Unknown,
-                })
-                .unwrap_or_default();
-        }
-        // Manche Akkus exportieren nur current_now — dann bleibt die Leistung leer.
-        if let Some(uw) = read_u64(&bat.join("power_now")) {
-            power_sum_uw = Some(power_sum_uw.unwrap_or(0) + uw);
-        }
-    }
-    out.power_w = power_sum_uw.map(|uw| uw as f32 / 1e6);
-    out
+    bats
 }
 
 fn read_u64(p: &PathBuf) -> Option<u64> {

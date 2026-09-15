@@ -69,6 +69,9 @@ pub const RAPL_ENERGY_FILE: &str = "energy_uj";
 pub const RAPL_MAX_ENERGY_FILE: &str = "max_energy_range_uj";
 /// Basis der Netzteile/Akkus.
 pub const POWER_SUPPLY_DIR: &str = "/sys/class/power_supply";
+/// Ticks zwischen zwei Akku-Verzeichnis-Rescans (Hot-Swap/Zweit-Akku);
+/// ~60 s beim Default-Intervall von 1,5 s.
+pub const BAT_RESCAN_TICKS: u32 = 40;
 /// Unplausibel hohe Leistungswerte verwerfen (z. B. Spike nach Resume).
 pub const POWER_SANITY_MAX_W: f32 = 1000.0;
 

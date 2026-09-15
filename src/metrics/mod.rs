@@ -3,6 +3,12 @@
 // Sammelt alle Metriken ausschließlich aus /proc und /sys — niemals über einen
 // Subprozess. Zustand (vorherige CPU-/Netz-Samples) lebt im `Collector`, damit
 // Deltas/Raten berechnet werden können.
+//
+// Sparsamkeit pro Tick: hwmon-/Akku-Pfade werden einmal aufgelöst und gecacht
+// (`SensorPaths`, `PowerReader::bats`); Momentanwerte, die nur im Popup sichtbar
+// sind (Temperaturen, Lüfter, per-Core-Prozente, PRIME-Modus), werden bei
+// geschlossenem Popup gar nicht erst erhoben. Delta-Metriken (CPU, Netz, RAPL)
+// laufen immer, sonst gäbe es Sprünge beim Popup-Öffnen.
 
 pub mod gpu;
 pub mod power;
@@ -37,12 +43,27 @@ struct CpuTimes {
     idle: u64,
 }
 
+/// Einmal aufgelöste hwmon-Pfade (Verzeichnis-Scans sind teuer und liefen
+/// früher mehrfach pro Tick). Lesefehler invalidieren den jeweiligen Pfad;
+/// nicht gefundene Chips werden erst beim nächsten Popup-Öffnen erneut gesucht.
+struct SensorPaths {
+    /// Fertig aufgelöster CPU-Temp-`_input`-Pfad (inkl. Label-Suche).
+    cpu_temp_input: Option<PathBuf>,
+    ram_temp_input: Option<PathBuf>,
+    /// hwmon-Basisverzeichnis des Lüfter-Chips.
+    fan_base: Option<PathBuf>,
+    resolved: bool,
+}
+
 /// Hält Zustand zwischen den Ticks.
 pub struct Collector {
     prev_cpu: Option<CpuTimes>,
     prev_core: Vec<CpuTimes>,
     prev_net: Option<(u64, u64, Instant)>,
     iface: Option<String>,
+    sensors: SensorPaths,
+    /// `live` des vorherigen Ticks — für den Sensor-Retry bei Popup-Öffnung.
+    was_live: bool,
     gpu: gpu::GpuReader,
     power: power::PowerReader,
     /// Wird beim Suspend gesetzt (Reserve für logind-Integration); pausiert GPU-Reads.
@@ -56,15 +77,24 @@ impl Collector {
             prev_core: Vec::new(),
             prev_net: None,
             iface: None,
+            sensors: SensorPaths {
+                cpu_temp_input: None,
+                ram_temp_input: None,
+                fan_base: None,
+                resolved: false,
+            },
+            was_live: false,
             gpu: gpu::GpuReader::new(),
             power: power::PowerReader::new(),
             paused: false,
         }
     }
 
-    /// `gpu_live`: ob GPU-Live-Werte (NVML) gelesen werden sollen — nur bei offenem Popup.
-    /// Sonst bleibt die dGPU unangetastet (kein Pin, kein Wecken).
-    pub fn refresh(&mut self, gpu_live: bool) -> Metrics {
+    /// `live`: Popup offen. Gated GPU-Live-Werte (NVML — dGPU bleibt sonst
+    /// unangetastet, kein Pin, kein Wecken) und die nur im Popup sichtbaren
+    /// Momentanwerte (Temperaturen, Lüfter). Delta-Metriken (CPU, Netz, RAPL)
+    /// laufen immer, damit beim Öffnen keine Sprünge entstehen.
+    pub fn refresh(&mut self, live: bool) -> Metrics {
         let mut m = Metrics::default();
 
         // --- CPU ---
@@ -72,7 +102,9 @@ impl Collector {
             if let Some(prev) = self.prev_cpu {
                 m.cpu_pct = cpu_usage(prev, agg);
             }
-            if self.prev_core.len() == cores.len() {
+            // Prozente nur bei offenem Popup berechnen; `prev_core` bleibt
+            // immer aktuell, damit die Deltas beim Öffnen sofort stimmen.
+            if live && self.prev_core.len() == cores.len() {
                 m.per_core = cores
                     .iter()
                     .zip(&self.prev_core)
@@ -89,11 +121,20 @@ impl Collector {
             m.mem_used_kb = total.saturating_sub(avail);
         }
 
-        // --- Temperaturen / Lüfter ---
-        m.cpu_temp_c = cpu_temp();
-        m.ram_temp_c =
-            hwmon_by_name(hw::RAM_TEMP_CHIP).and_then(|p| read_milli_c(&p.join("temp1_input")));
-        m.fans_rpm = read_fans();
+        // --- Temperaturen / Lüfter (nur im Popup sichtbar) ---
+        if live {
+            // Beim Popup-Öffnen fehlende Sensoren erneut suchen (Modul-Nachladen).
+            if !self.was_live {
+                self.sensors.resolved = false;
+            }
+            if !self.sensors.resolved {
+                self.sensors.resolve();
+            }
+            m.cpu_temp_c = self.sensors.cpu_temp();
+            m.ram_temp_c = self.sensors.ram_temp();
+            m.fans_rpm = self.sensors.fans();
+        }
+        self.was_live = live;
 
         // --- Netz ---
         // Default-Interface bei jedem Tick neu bestimmen (WLAN↔LAN↔VPN-Wechsel);
@@ -128,7 +169,7 @@ impl Collector {
         m.power = self.power.read();
 
         // --- GPU (NVML nur wenn dGPU wach, Live gewünscht & nicht pausiert) ---
-        m.gpu = self.gpu.read(gpu_live && !self.paused);
+        m.gpu = self.gpu.read(live && !self.paused);
 
         m
     }
@@ -166,14 +207,22 @@ fn read_cpu_times() -> Option<(CpuTimes, Vec<CpuTimes>)> {
         }
         let mut it = line.split_whitespace();
         let tag = it.next()?;
-        let nums: Vec<u64> = it.filter_map(|x| x.parse::<u64>().ok()).collect();
-        if nums.len() < 5 {
-            continue;
-        }
+        // Felder direkt aufsummieren statt in ein Vec zu sammeln (läuft jeden Tick).
         // Nur die ersten 8 Felder (user..steal) summieren: guest/guest_nice (Feld 9/10)
         // sind laut Kernel bereits in user/nice enthalten → sonst Doppelzählung.
-        let total: u64 = nums.iter().take(8).sum();
-        let idle = nums[3] + nums[4]; // idle + iowait
+        let mut total: u64 = 0;
+        let mut idle: u64 = 0;
+        let mut n = 0usize;
+        for x in it.filter_map(|x| x.parse::<u64>().ok()).take(8) {
+            if n == 3 || n == 4 {
+                idle += x; // idle + iowait
+            }
+            total += x;
+            n += 1;
+        }
+        if n < 5 {
+            continue;
+        }
         let t = CpuTimes { total, idle };
         if tag == "cpu" {
             agg = Some(t);
@@ -219,40 +268,87 @@ fn read_net_bytes(iface: &str) -> Option<(u64, u64)> {
     Some((rx, tx))
 }
 
-// ---- hwmon-Helfer ----
+// ---- hwmon-Helfer (Pfade werden in `SensorPaths` gecacht) ----
 
-fn hwmon_by_name(name: &str) -> Option<PathBuf> {
-    for e in fs::read_dir(hw::SYS_CLASS_HWMON).ok()?.flatten() {
-        let p = e.path();
-        if let Ok(n) = fs::read_to_string(p.join("name")) {
-            if n.trim() == name {
-                return Some(p);
+impl SensorPaths {
+    /// Löst alle Sensor-Pfade in EINEM `/sys/class/hwmon`-Scan auf (früher
+    /// 3–5 Scans pro Tick). Läuft nur beim Popup-Öffnen bzw. nach Invalidierung.
+    fn resolve(&mut self) {
+        self.cpu_temp_input = None;
+        self.ram_temp_input = None;
+        self.fan_base = None;
+        let mut cpu_fallback: Option<PathBuf> = None;
+        // Bester Treffer gewinnt: kleinster Index in CPU_TEMP_LABELED.
+        let mut cpu_rank = usize::MAX;
+
+        if let Ok(dir) = fs::read_dir(hw::SYS_CLASS_HWMON) {
+            for e in dir.flatten() {
+                let p = e.path();
+                let Ok(name) = fs::read_to_string(p.join("name")) else {
+                    continue;
+                };
+                let name = name.trim();
+                for (rank, (chip, label)) in hw::CPU_TEMP_LABELED.iter().enumerate() {
+                    if name == *chip && rank < cpu_rank {
+                        if let Some(input) = label_input_path(&p, label) {
+                            self.cpu_temp_input = Some(input);
+                            cpu_rank = rank;
+                        }
+                    }
+                }
+                if name == hw::CPU_TEMP_FALLBACK_CHIP {
+                    cpu_fallback = Some(p.join("temp1_input"));
+                }
+                if name == hw::RAM_TEMP_CHIP {
+                    self.ram_temp_input = Some(p.join("temp1_input"));
+                }
+                if name == hw::FAN_CHIP {
+                    self.fan_base = Some(p.clone());
+                }
             }
         }
+        if self.cpu_temp_input.is_none() {
+            self.cpu_temp_input = cpu_fallback;
+        }
+        self.resolved = true;
     }
-    None
-}
 
-fn cpu_temp() -> Option<f32> {
-    // Bekannte (Chip, Label)-Paare der Reihe nach versuchen (Intel coretemp, AMD k10temp, …).
-    for (chip, label) in hw::CPU_TEMP_LABELED {
-        if let Some(base) = hwmon_by_name(chip) {
-            if let Some(t) = label_input(&base, label) {
-                return Some(t);
+    fn cpu_temp(&mut self) -> Option<f32> {
+        let t = self.cpu_temp_input.as_ref().and_then(|p| read_milli_c(p));
+        if t.is_none() && self.cpu_temp_input.is_some() {
+            // Pfad tot (Modul entladen / Index verschoben) → beim nächsten
+            // Popup-Öffnen neu auflösen.
+            self.cpu_temp_input = None;
+        }
+        t
+    }
+
+    fn ram_temp(&mut self) -> Option<f32> {
+        let t = self.ram_temp_input.as_ref().and_then(|p| read_milli_c(p));
+        if t.is_none() && self.ram_temp_input.is_some() {
+            self.ram_temp_input = None;
+        }
+        t
+    }
+
+    fn fans(&mut self) -> Vec<u32> {
+        let mut out = Vec::new();
+        if let Some(base) = &self.fan_base {
+            for n in 1..=hw::FAN_MAX_INDEX {
+                if let Some(rpm) = read_u64(&base.join(format!("fan{n}_input"))) {
+                    if rpm > 0 {
+                        out.push(rpm as u32);
+                    }
+                }
             }
         }
+        out
     }
-    // Fallback-Chip (dessen temp1_input).
-    if let Some(base) = hwmon_by_name(hw::CPU_TEMP_FALLBACK_CHIP) {
-        if let Some(t) = read_milli_c(&base.join("temp1_input")) {
-            return Some(t);
-        }
-    }
-    None
 }
 
-/// Sucht in einem hwmon-Verzeichnis das temp*_label == `want` und liest dessen _input.
-fn label_input(base: &PathBuf, want: &str) -> Option<f32> {
+/// Sucht in einem hwmon-Verzeichnis das temp*_label == `want` und gibt den
+/// zugehörigen `_input`-Pfad zurück (nur bei lesbarem Wert).
+fn label_input_path(base: &PathBuf, want: &str) -> Option<PathBuf> {
     for e in fs::read_dir(base).ok()?.flatten() {
         let p = e.path();
         let fname = p.file_name()?.to_str()?.to_string();
@@ -260,26 +356,14 @@ fn label_input(base: &PathBuf, want: &str) -> Option<f32> {
             if let Ok(lbl) = fs::read_to_string(&p) {
                 if lbl.trim() == want {
                     let input = base.join(fname.replace("_label", "_input"));
-                    return read_milli_c(&input);
+                    if read_milli_c(&input).is_some() {
+                        return Some(input);
+                    }
                 }
             }
         }
     }
     None
-}
-
-fn read_fans() -> Vec<u32> {
-    let mut out = Vec::new();
-    if let Some(base) = hwmon_by_name(hw::FAN_CHIP) {
-        for n in 1..=hw::FAN_MAX_INDEX {
-            if let Some(rpm) = read_u64(&base.join(format!("fan{n}_input"))) {
-                if rpm > 0 {
-                    out.push(rpm as u32);
-                }
-            }
-        }
-    }
-    out
 }
 
 fn read_u64(p: &PathBuf) -> Option<u64> {

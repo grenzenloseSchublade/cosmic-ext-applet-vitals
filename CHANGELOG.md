@@ -21,6 +21,29 @@
   (`power_breakdown`) blendet die CPU/GPU-Teilwerte aus.
 - Einstellungs-Seite scrollbar — vorher wurde die Liste unterhalb der
   Popup-Höhe abgeschnitten („Auf Standard zurücksetzen" unerreichbar).
+- **Info-Tooltips in den Einstellungen:** jedes Label (inkl. Metrik-Zeilen und
+  Abschnitts-Header „Metriken & Reihenfolge") hat ein ⓘ-Icon mit Erklärtext
+  beim Hovern. Info-Boxen mit abgesetztem Komponenten-Hintergrund und Rand in
+  der System-Akzentfarbe (zentral im `info_box`-Helper).
+- **Hover-Erklärungen in der Hauptansicht:** die fetten Metrik-Wörter (CPU,
+  GPU, Watt, …) zeigen beim Hovern eine Info-Box, die die Anzeige konkret
+  erklärt (Spalten, GPU-Zustände, Watt-Quellen); nur das Wort ist hoverbar.
+  Die Box ist ein echtes Wayland-Popup (`xdg_popup`) und öffnet links vom
+  Wort **über den Fensterrand hinaus** — ein normaler iced-Tooltip wird ins
+  Fenster geklemmt und läge über den Werten.
+- **Akzentfarbe für Metrik-Beschriftungen** im Popup (neuer Schalter
+  „Beschriftungen in Akzentfarbe" unter „Darstellung", Standard an) — nutzt
+  die in COSMIC gewählte Akzentfarbe, keine hartkodierten Farben; Orange/Rot
+  bleiben den Temperatur-Warnschwellen vorbehalten.
+- **Weniger Syscalls pro Tick:** hwmon-Pfade (CPU-/RAM-Temp, Lüfter) und
+  Akku-Pfade werden einmal aufgelöst und gecacht statt das Verzeichnis bei
+  jedem Tick zu scannen (vorher 3–5 volle `/sys/class/hwmon`-Scans pro Tick);
+  Invalidierung bei Lesefehler, Akku-Rescan periodisch (Hot-Swap), fehlende
+  Sensoren werden beim Popup-Öffnen erneut gesucht (Modul-Nachladen).
+- Nur im Popup sichtbare Momentanwerte (Temperaturen, Lüfter, per-Core-Prozente,
+  PRIME-Modus) werden bei geschlossenem Popup nicht mehr erhoben; beim Öffnen
+  stößt das Applet sofort eine Erfassung an. `/proc/stat`-Parsing ohne
+  Zwischen-Allokationen.
 
 ## 1.0.0 — 2026-06-25
 

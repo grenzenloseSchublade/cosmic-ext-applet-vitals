@@ -5,10 +5,22 @@ use crate::metrics::{Collector, Metrics};
 use cosmic::cosmic_config::{self, CosmicConfigEntry};
 use cosmic::iced::platform_specific::shell::wayland::commands::popup::{destroy_popup, get_popup};
 use cosmic::iced::{time, window::Id, Alignment, Length, Limits, Subscription};
+use cosmic::cctk::sctk::reexports::protocols::xdg::shell::client::xdg_positioner::{
+    Anchor, Gravity,
+};
+use cosmic::iced::Rectangle;
 use cosmic::prelude::*;
 use cosmic::widget;
-use std::sync::{Arc, Mutex};
+use iced_runtime::platform_specific::wayland::popup::{SctkPopupSettings, SctkPositioner};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
+
+/// Fenster-Id des (einen) Wayland-Metrik-Tooltips — als xdg_popup darf er über
+/// den Rand des Metrik-Popups hinausragen (ein iced-Tooltip kann das nicht).
+static METRIC_TIP_WINDOW: LazyLock<Id> = LazyLock::new(Id::unique);
+/// Autosize-Id für den Tooltip-Inhalt.
+static METRIC_TIP_AUTOSIZE: LazyLock<widget::Id> =
+    LazyLock::new(|| widget::Id::new("metric-tooltip"));
 
 /// Symbolisches Panel-Icon (Prozessor-Chip), eingebettet → kein Theme-Install nötig,
 /// wird vom COSMIC-Panel automatisch hell/dunkel eingefärbt.
@@ -83,6 +95,20 @@ impl MetricKind {
             Self::Cores => "Kerne",
             Self::Power => "Watt",
             Self::Battery => "Akku",
+        }
+    }
+
+    /// Kurzerklärung für das Info-Icon in den Einstellungen.
+    fn info(self) -> &'static str {
+        match self {
+            Self::Cpu => "Gesamtauslastung aller Kerne in Prozent; optional mit Temperatur.",
+            Self::Mem => "Belegter Arbeitsspeicher (belegt/gesamt) und Prozent.",
+            Self::Net => "Empfangs-/Senderate der Netzwerkschnittstellen (Einheit unter „Netz-Einheit“).",
+            Self::Gpu => "Auslastung, Speicher und Temperatur der dedizierten GPU (NVIDIA/NVML).",
+            Self::Fans => "Drehzahlen der Lüfter (Quelle: hwmon).",
+            Self::Cores => "Auslastung jedes einzelnen CPU-Kerns als eigene Zeile.",
+            Self::Power => "Leistungsaufnahme: System (RAPL psys), CPU-Package und GPU.",
+            Self::Battery => "Ladezustand, Spannung sowie Lade-/Entladeleistung des Akkus.",
         }
     }
 
@@ -163,6 +189,9 @@ pub enum Message {
     CycleNetUnit,
     SetInterval(u64),
     SetGraphical(bool),
+    SetAccentLabels(bool),
+    /// Surface-Aktionen der Wayland-Tooltips (an libcosmic durchgereicht).
+    Surface(cosmic::surface::Action),
     SetPanelText(bool),
     SetPowerBreakdown(bool),
     CyclePanelMetric,
@@ -310,7 +339,10 @@ impl cosmic::Application for AppModel {
                         .min_width(POPUP_MIN_WIDTH)
                         .min_height(POPUP_MIN_HEIGHT)
                         .max_height(POPUP_MAX_HEIGHT);
-                    get_popup(popup_settings)
+                    // Sofort-Refresh: Temps/Lüfter/GPU werden bei zugeklapptem Popup
+                    // nicht erhoben — ohne diesen Anstoß blieben sie bis zu einem
+                    // vollen Intervall leer.
+                    Task::batch([get_popup(popup_settings), self.spawn_refresh(true)])
                 };
             }
             Message::ToggleSettings => {
@@ -357,6 +389,12 @@ impl cosmic::Application for AppModel {
                 self.persist(move |c, h| c.set_interval_ms(h, ms));
             }
             Message::SetGraphical(v) => self.persist(move |c, h| c.set_graphical(h, v)),
+            Message::SetAccentLabels(v) => self.persist(move |c, h| c.set_accent_labels(h, v)),
+            Message::Surface(a) => {
+                return cosmic::task::message(cosmic::Action::Cosmic(
+                    cosmic::app::Action::Surface(a),
+                ));
+            }
             Message::SetPanelText(v) => self.persist(move |c, h| c.set_panel_text(h, v)),
             Message::SetPowerBreakdown(v) => {
                 self.persist(move |c, h| c.set_power_breakdown(h, v));
@@ -547,6 +585,8 @@ impl AppModel {
                     String::new(),
                     temp_cell(temp, c, c.mono_font),
                     c.mono_font,
+                    c.accent_labels,
+                    self.popup,
                 )]
             }
             MetricKind::Mem => {
@@ -559,6 +599,8 @@ impl AppModel {
                     fmt_mem(m),
                     temp_cell(m.ram_temp_c, c, c.mono_font),
                     c.mono_font,
+                    c.accent_labels,
+                    self.popup,
                 )]
             }
             MetricKind::Net => {
@@ -574,6 +616,8 @@ impl AppModel {
                         kind
                     ),
                     c.mono_font,
+                    c.accent_labels,
+                    self.popup,
                 )]
             }
             MetricKind::Gpu => {
@@ -594,7 +638,7 @@ impl AppModel {
                     None
                 };
                 match (text, g.util) {
-                    (Some(t), _) => vec![labeled_row("GPU", t, c.mono_font)],
+                    (Some(t), _) => vec![labeled_row("GPU", t, c.mono_font, c.accent_labels, self.popup)],
                     // aktiv mit Live-Zahlen: links % · mittig VRAM · rechts Temp (kein Modus → kein Umbruch).
                     (None, Some(u)) => {
                         let vram = match (g.vram_used_mb, g.vram_total_mb) {
@@ -613,6 +657,8 @@ impl AppModel {
                             vram,
                             temp_cell(g.temp_c.map(|t| t as f32), c, c.mono_font),
                             c.mono_font,
+                            c.accent_labels,
+                            self.popup,
                         )]
                     }
                     (None, None) => Vec::new(),
@@ -628,7 +674,7 @@ impl AppModel {
                         .map(|r| r.to_string())
                         .collect::<Vec<_>>()
                         .join(" / ");
-                    vec![labeled_row("Lüfter", format!("{fans} rpm"), c.mono_font)]
+                    vec![labeled_row("Lüfter", format!("{fans} rpm"), c.mono_font, c.accent_labels, self.popup)]
                 }
             }
             MetricKind::Cores => {
@@ -646,7 +692,7 @@ impl AppModel {
                             .join(" ");
                         // Folgezeilen ohne Label, aber gleiche Spaltenbreite → bündig untereinander.
                         let label = if i == 0 { "Kerne %" } else { "" };
-                        labeled_row(label, cores, true)
+                        labeled_row(label, cores, true, c.accent_labels, self.popup)
                     })
                     .collect()
             }
@@ -678,7 +724,7 @@ impl AppModel {
                         parts.push(format!("GPU {w:.1}"));
                     }
                 }
-                vec![labeled_row("Watt", parts.join(" · "), c.mono_font)]
+                vec![labeled_row("Watt", parts.join(" · "), c.mono_font, c.accent_labels, self.popup)]
             }
             MetricKind::Battery => {
                 use crate::metrics::power::BatStatus;
@@ -704,7 +750,7 @@ impl AppModel {
                 if let Some(cw) = p.charger_w {
                     parts.push(format!("Netzteil ≈ {cw:.0} W"));
                 }
-                vec![labeled_row("Akku", parts.join(" · "), c.mono_font)]
+                vec![labeled_row("Akku", parts.join(" · "), c.mono_font, c.accent_labels, self.popup)]
             }
         }
     }
@@ -715,8 +761,10 @@ impl AppModel {
         let spacing = cosmic::theme::spacing();
 
         // --- Metriken & Reihenfolge ---
-        let mut order_section =
-            widget::settings::section().header(padded_heading("Metriken & Reihenfolge"));
+        let mut order_section = widget::settings::section().header(padded_heading_info(
+            "Metriken & Reihenfolge",
+            "▲/▼ ändert die Reihenfolge im Popup; der Schalter blendet die Metrik ein/aus.",
+        ));
         let order = &c.metric_order;
         for (i, id) in order.iter().enumerate() {
             if let Some(kind) = MetricKind::from_u8(*id) {
@@ -729,7 +777,7 @@ impl AppModel {
                 // Toggler als LETZTES Element → gleiche rechte Kante wie die Toggler der `item()`-Zeilen;
                 // ▲/▼ gruppiert direkt links davon.
                 order_section = order_section.add(widget::settings::item_row(vec![
-                    widget::text(kind.label()).width(Length::Fill).into(),
+                    info_label(kind.label(), kind.info()),
                     up.into(),
                     down.into(),
                     tog.into(),
@@ -748,21 +796,52 @@ impl AppModel {
             }
         );
         let display_section = widget::settings::section().header(padded_heading("Anzeige"));
-        let display_section = toggle_item(display_section, "CPU-Temperatur anzeigen", c.show_cpu_temp, Message::SetCpuTemp);
-        let display_section = toggle_item(display_section, "Temperatur in °F", c.fahrenheit, Message::SetFahrenheit);
-        let display_section = toggle_item(display_section, "Monospace-Schrift", c.mono_font, Message::SetMonoFont);
-        let display_section = toggle_item(display_section, "GPU im Schlaf ausblenden", c.hide_gpu_when_asleep, Message::SetHideGpu);
-        let display_section = display_section.add(widget::settings::item(
-            "Netz-Einheit",
-            widget::button::text(net_label).on_press(Message::CycleNetUnit),
-        ));
+        let display_section = toggle_item(
+            display_section,
+            "CPU-Temperatur anzeigen",
+            "Zeigt die CPU-Temperatur zusätzlich in der CPU-Zeile (Quelle: hwmon).",
+            c.show_cpu_temp,
+            Message::SetCpuTemp,
+        );
+        let display_section = toggle_item(
+            display_section,
+            "Temperatur in °F",
+            "Alle Temperaturen in Fahrenheit statt Celsius.",
+            c.fahrenheit,
+            Message::SetFahrenheit,
+        );
+        let display_section = toggle_item(
+            display_section,
+            "Monospace-Schrift",
+            "Feste Zeichenbreite — Werte springen beim Aktualisieren nicht.",
+            c.mono_font,
+            Message::SetMonoFont,
+        );
+        let display_section = toggle_item(
+            display_section,
+            "GPU im Schlaf ausblenden",
+            "Blendet die GPU-Zeile aus, wenn die dGPU per Runtime-PM schläft; verhindert unnötiges Aufwecken.",
+            c.hide_gpu_when_asleep,
+            Message::SetHideGpu,
+        );
+        let display_section = display_section.add(widget::settings::item_row(vec![
+            info_label(
+                "Netz-Einheit",
+                "Einheit für Netzwerk-Durchsatz: MB/s (SI, 10⁶), MiB/s (binär, 2²⁰) oder Mbit/s. Klick wechselt.",
+            ),
+            widget::button::text(net_label)
+                .on_press(Message::CycleNetUnit)
+                .into(),
+        ]));
 
         // --- Aktualisierung ---
         let interval_section = widget::settings::section()
             .header(padded_heading("Aktualisierung"))
-            .add(
-            widget::settings::item(
-                "Intervall (ms)",
+            .add(widget::settings::item_row(vec![
+                info_label(
+                    "Intervall (ms)",
+                    "Abstand zwischen Messungen (250–5000 ms). Kürzer = aktueller, minimal mehr CPU-Last.",
+                ),
                 widget::spin_button(
                     self.config.interval_ms.to_string(),
                     self.config.interval_ms,
@@ -770,9 +849,9 @@ impl AppModel {
                     250u64,
                     5000u64,
                     Message::SetInterval,
-                ),
-            ),
-        );
+                )
+                .into(),
+            ]));
 
         // --- Darstellung ---
         let panel_metric_label = format!(
@@ -782,19 +861,54 @@ impl AppModel {
                 .label()
         );
         let display2_section = widget::settings::section().header(padded_heading("Darstellung"));
-        let display2_section = toggle_item(display2_section, "Balken im Popup (CPU/RAM/GPU)", c.graphical, Message::SetGraphical);
-        let display2_section = toggle_item(display2_section, "Watt aufschlüsseln", c.power_breakdown, Message::SetPowerBreakdown);
-        let display2_section = toggle_item(display2_section, "Wert neben dem Panel-Icon", c.panel_text, Message::SetPanelText);
-        let display2_section = display2_section.add(widget::settings::item(
-            "Panel-Wert",
-            widget::button::text(panel_metric_label).on_press(Message::CyclePanelMetric),
-        ));
+        let display2_section = toggle_item(
+            display2_section,
+            "Balken im Popup (CPU/RAM/GPU)",
+            "Zeigt Auslastung zusätzlich als Fortschrittsbalken statt nur als Zahl.",
+            c.graphical,
+            Message::SetGraphical,
+        );
+        let display2_section = toggle_item(
+            display2_section,
+            "Beschriftungen in Akzentfarbe",
+            "Färbt die fetten Metrik-Beschriftungen im Popup in der System-Akzentfarbe (COSMIC-Einstellungen → Desktop → Erscheinungsbild).",
+            c.accent_labels,
+            Message::SetAccentLabels,
+        );
+        let display2_section = toggle_item(
+            display2_section,
+            "Watt aufschlüsseln",
+            "Zeigt System/CPU/GPU-Leistung als getrennte Zeilen statt einer kompakten Zeile.",
+            c.power_breakdown,
+            Message::SetPowerBreakdown,
+        );
+        let display2_section = toggle_item(
+            display2_section,
+            "Wert neben dem Panel-Icon",
+            "Zeigt den gewählten Messwert als Text direkt im Panel.",
+            c.panel_text,
+            Message::SetPanelText,
+        );
+        let display2_section = display2_section.add(widget::settings::item_row(vec![
+            info_label(
+                "Panel-Wert",
+                "Welche Metrik neben dem Panel-Icon steht (CPU, RAM, Netz, GPU oder Watt). Klick wechselt.",
+            ),
+            widget::button::text(panel_metric_label)
+                .on_press(Message::CyclePanelMetric)
+                .into(),
+        ]));
 
         // Auf Standard zurücksetzen (schreibt alle Felder neu).
-        let reset = widget::container(
-            widget::button::standard("Auf Standard zurücksetzen").on_press(Message::ResetDefaults),
-        )
-        .padding([spacing.space_xs, 0]);
+        // Horizontal `space_m` — gleiche Einzugs-Konvention wie `padded_heading`,
+        // damit der Button bündig zu Headings und Section-Karten steht.
+        let reset = widget::container(info_box(
+            widget::button::standard("Auf Standard zurücksetzen")
+                .on_press(Message::ResetDefaults),
+            "Setzt alle Einstellungen auf die Standardwerte zurück.",
+            widget::tooltip::Position::Top,
+        ))
+        .padding([spacing.space_xs, spacing.space_m]);
 
         widget::settings::view_column(vec![
             order_section.into(),
@@ -809,23 +923,58 @@ impl AppModel {
 
 // ---- UI-Helfer ----
 
-/// Fette Metrik-Beschriftung in fester Spaltenbreite (`LABEL_WIDTH`).
-fn bold_label<'a>(label: &'static str) -> Element<'a, Message> {
-    widget::text(label)
-        .font(cosmic::font::bold())
+/// Erklärtext zur Metrik-Zeile der Hauptansicht: was die Anzeige konkret
+/// bedeutet (Spalten, Zustände, Quellen). Schlüssel ist das angezeigte Label —
+/// die Labels sind kanonisch (`MetricKind::label()` bzw. „Kerne %").
+fn metric_value_info(label: &'static str) -> Option<&'static str> {
+    Some(match label {
+        "CPU" => "Gesamtauslastung über alle Kerne; rechts die CPU-Paket-Temperatur (hwmon).",
+        "RAM" => "Auslastung in Prozent; Mitte belegt/gesamt in GiB; rechts die RAM-Temperatur (falls Sensor vorhanden).",
+        "Netz" => "↓ Empfangs- und ↑ Senderate der aktiven Schnittstelle; dahinter der Typ (WLAN/LAN/VPN).",
+        "GPU" => "Zustände: „schläft“ = dGPU im Stromsparmodus (wird nie geweckt); „keine NVIDIA“ = keine dGPU gefunden; „aktiv · Modus“ = wach, aber ohne Live-Werte; sonst Auslastung % · VRAM belegt/gesamt · Temperatur (via NVML).",
+        "Lüfter" => "Drehzahlen aller erkannten Lüfter in Umdrehungen pro Minute (hwmon).",
+        "Kerne %" => "Auslastung je CPU-Kern in Prozent, in Reihen zu je 6 Kernen.",
+        "Watt" => "Gesamtleistung des Systems (RAPL psys; „– · Netz“ = am Netz nur mit Akku-Messung nicht bestimmbar) · optional CPU-Package · GPU; beim Laden zusätzlich „Netzteil ≈“ (psys + Ladeleistung).",
+        "Akku" => "Spannung · Ladezustand (lädt/entlädt/voll) · aktuelle Lade- bzw. Entladeleistung in W.",
+        _ => return None,
+    })
+}
+
+/// Fette Metrik-Beschriftung in fester Spaltenbreite (`LABEL_WIDTH`);
+/// optional in der System-Akzentfarbe (`accent_labels`). Gibt es einen
+/// Erklärtext, ist NUR das Wort hoverbar; die Info-Box öffnet als
+/// Wayland-Popup links vom Wort — über den Fensterrand hinaus, damit sie
+/// die Werte nicht überdeckt (`parent` = Fenster-Id des Metrik-Popups).
+fn bold_label<'a>(label: &'static str, accent: bool, parent: Option<Id>) -> Element<'a, Message> {
+    let mut t = widget::text(label).font(cosmic::font::bold());
+    if accent {
+        t = t.class(cosmic::theme::Text::Accent);
+    }
+    let word: Element<'a, Message> = match (metric_value_info(label), parent) {
+        (Some(info), Some(parent)) => metric_tooltip(t, info, parent),
+        _ => t.into(),
+    };
+    // Feste Spaltenbreite außen — der Tooltip bleibt aufs Wort begrenzt.
+    widget::container(word)
         .width(Length::Fixed(LABEL_WIDTH))
         .into()
 }
 
 /// Einzeilige Metrik-Zeile: fettes Label + Wert (optional Monospace für bündige Ziffern).
-fn labeled_row<'a>(label: &'static str, value: String, mono: bool) -> Element<'a, Message> {
+fn labeled_row<'a>(
+    label: &'static str,
+    value: String,
+    mono: bool,
+    accent: bool,
+    parent: Option<Id>,
+) -> Element<'a, Message> {
     let val = widget::text(value);
     let val = if mono {
         val.font(cosmic::iced::Font::MONOSPACE)
     } else {
         val
     };
-    widget::row::with_children(vec![bold_label(label), val.into()])
+    widget::row::with_children(vec![bold_label(label, accent, parent), val.into()])
         .spacing(cosmic::theme::spacing().space_xs)
         .align_y(Alignment::Center)
         .into()
@@ -850,9 +999,11 @@ fn triple_row<'a>(
     mid: String,
     right: Element<'a, Message>,
     mono: bool,
+    accent: bool,
+    parent: Option<Id>,
 ) -> Element<'a, Message> {
     widget::row::with_children(vec![
-        bold_label(label),
+        bold_label(label, accent, parent),
         value_text(left, mono),
         widget::space::horizontal().into(),
         value_text(mid, mono),
@@ -895,8 +1046,10 @@ fn metric_or_bar<'a>(
     mid: String,
     right: Element<'a, Message>,
     mono: bool,
+    accent: bool,
+    parent: Option<Id>,
 ) -> Element<'a, Message> {
-    let head = triple_row(label, left, mid, right, mono);
+    let head = triple_row(label, left, mid, right, mono, accent, parent);
     if graphical {
         let bar = widget::determinate_linear(frac.clamp(0.0, 1.0))
             .width(Length::Fill)
@@ -909,6 +1062,126 @@ fn metric_or_bar<'a>(
     }
 }
 
+/// Einheitlich gestylte Info-Box um beliebigen Inhalt — die EINE Stelle für
+/// Optik aller Erklär-Tooltips. Wie `Container::Dropdown` (Komponenten-
+/// Hintergrund, der die Box sichtbar vom Popup absetzt — der Standard-Tooltip
+/// mit `neutral_2` ist fast flächengleich), aber mit 1-px-Rand in der
+/// System-Akzentfarbe statt Divider-Grau; Padding `space_s` statt der hart
+/// verdrahteten `space_xxs` des Wrappers.
+fn info_box<'a>(
+    content: impl Into<Element<'a, Message>>,
+    info: &'static str,
+    position: widget::tooltip::Position,
+) -> Element<'a, Message> {
+    widget::tooltip(
+        content,
+        widget::container(widget::text(info)).max_width(280.0),
+        position,
+    )
+    .class(cosmic::theme::Container::custom(info_box_style))
+    .padding(cosmic::theme::spacing().space_s)
+    .into()
+}
+
+/// Der gemeinsame Look aller Info-Boxen: Komponenten-Hintergrund + 1-px-Rand
+/// in der System-Akzentfarbe (genutzt vom iced-Tooltip UND vom Wayland-Tooltip).
+fn info_box_style(theme: &cosmic::Theme) -> cosmic::iced::widget::container::Style {
+    let t = theme.cosmic();
+    cosmic::iced::widget::container::Style {
+        icon_color: None,
+        text_color: None,
+        background: Some(cosmic::iced::Background::Color(
+            t.bg_component_color().into(),
+        )),
+        border: cosmic::iced::Border {
+            color: t.accent_color().into(),
+            width: 1.0,
+            radius: t.corner_radii.radius_s.into(),
+        },
+        shadow: Default::default(),
+        snap: true,
+    }
+}
+
+/// Info-Box als ECHTES Wayland-Popup (xdg_popup): darf über die Ränder des
+/// Metrik-Popups hinausragen — ein iced-Tooltip wird dagegen ins Fenster
+/// geklemmt und läge über den Werten. Öffnet links vom Anker (`Anchor::Left`);
+/// `constraint_adjustment` lässt den Compositor am Bildschirmrand ausweichen.
+fn metric_tooltip<'a>(
+    content: impl Into<Element<'a, Message>>,
+    info: &'static str,
+    parent: Id,
+) -> Element<'a, Message> {
+    cosmic::widget::wayland::tooltip::widget::Tooltip::<'a, Message, Message>::new(
+        content,
+        Some(move |bounds: Rectangle| SctkPopupSettings {
+            parent,
+            id: *METRIC_TIP_WINDOW,
+            grab: false,
+            // Eingaben gehen am Tooltip vorbei (wie beim libcosmic-Applet-Tooltip).
+            input_zone: Some(vec![Rectangle::new(
+                cosmic::iced::Point::new(-1000.0, -1000.0),
+                cosmic::iced::Size::default(),
+            )]),
+            positioner: SctkPositioner {
+                size: None,
+                size_limits: Limits::NONE.min_width(1.0).min_height(1.0).max_width(300.0),
+                anchor_rect: Rectangle {
+                    x: bounds.x.round() as i32,
+                    y: bounds.y.round() as i32,
+                    width: bounds.width.round() as i32,
+                    height: bounds.height.round() as i32,
+                },
+                anchor: Anchor::Left,
+                gravity: Gravity::Left,
+                // slide|flip: am Bildschirmrand verschieben/spiegeln statt abschneiden.
+                constraint_adjustment: 15,
+                offset: (-4, 0),
+                reactive: true,
+            },
+            parent_size: None,
+            close_with_children: true,
+        }),
+        move || {
+            widget::autosize::autosize(
+                widget::container(widget::text(info))
+                    .max_width(280.0)
+                    .padding(cosmic::theme::spacing().space_s)
+                    .class(cosmic::theme::Container::custom(info_box_style)),
+                METRIC_TIP_AUTOSIZE.clone(),
+            )
+            .into()
+        },
+        Message::Surface(cosmic::surface::Action::DestroyPopup(*METRIC_TIP_WINDOW)),
+        Message::Surface,
+    )
+    .delay(Duration::from_millis(150))
+    .into()
+}
+
+/// Info-Icon (ⓘ), das beim Hovern eine Erklärbox zeigt.
+fn info_icon<'a>(
+    info: &'static str,
+    position: widget::tooltip::Position,
+) -> Element<'a, Message> {
+    info_box(
+        widget::icon::from_name("dialog-information-symbolic").size(14),
+        info,
+        position,
+    )
+}
+
+/// Label mit Info-Icon daneben; füllt die Breite, damit Controls rechtsbündig bleiben.
+fn info_label<'a>(title: &'static str, info: &'static str) -> Element<'a, Message> {
+    widget::row::with_capacity(2)
+        .push(widget::text(title))
+        .push(info_icon(info, widget::tooltip::Position::Top))
+        .spacing(cosmic::theme::spacing().space_xxs)
+        .align_y(Alignment::Center)
+        .width(Length::Fill)
+        .into()
+}
+
 /// Abschnitts-Titel mit horizontalem Einzug (`space_m`), damit er nicht am Fensterrand klebt
 /// und bündig zu den (ebenfalls eingerückten) Items steht.
 fn padded_heading<'a>(title: &'static str) -> Element<'a, Message> {
@@ -917,17 +1190,32 @@ fn padded_heading<'a>(title: &'static str) -> Element<'a, Message> {
         .into()
 }
 
-/// Hängt eine Toggler-Zeile an eine Settings-Section (entfernt die Wiederholung).
+/// Wie `padded_heading`, zusätzlich mit Info-Icon hinter dem Titel.
+fn padded_heading_info<'a>(title: &'static str, info: &'static str) -> Element<'a, Message> {
+    widget::container(
+        widget::row::with_capacity(2)
+            .push(widget::text::heading(title))
+            // Bottom: Header sitzt ganz oben — Tooltip nach oben würde am Popup-Rand clippen.
+            .push(info_icon(info, widget::tooltip::Position::Bottom))
+            .spacing(cosmic::theme::spacing().space_xxs)
+            .align_y(Alignment::Center),
+    )
+    .padding([0, cosmic::theme::spacing().space_m])
+    .into()
+}
+
+/// Hängt eine Toggler-Zeile mit Info-Icon an eine Settings-Section (entfernt die Wiederholung).
 fn toggle_item<'a>(
     section: widget::settings::Section<'a, Message>,
     title: &'static str,
+    info: &'static str,
     value: bool,
     msg: fn(bool) -> Message,
 ) -> widget::settings::Section<'a, Message> {
-    section.add(widget::settings::item(
-        title,
-        widget::toggler(value).on_toggle(msg),
-    ))
+    section.add(widget::settings::item_row(vec![
+        info_label(title, info),
+        widget::toggler(value).on_toggle(msg).into(),
+    ]))
 }
 
 fn mem_pct(m: &Metrics) -> f32 {

@@ -936,6 +936,7 @@ dependencies = [
 name = "cosmic-ext-applet-vitals"
 version = "1.0.0"
 dependencies = [
+ "iced_runtime",
  "libcosmic",
  "nvml-wrapper",
  "tokio",

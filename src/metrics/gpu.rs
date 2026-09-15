@@ -53,6 +53,9 @@ pub struct GpuReader {
     /// gibt aber NICHT dauerhaft auf — nach Ablauf wird erneut versucht).
     backoff: u8,
     pci_path: Option<PathBuf>,
+    /// Gecachter PRIME-Modus — ändert sich nur mit Reboot/Re-Login; wird nur
+    /// bei Live-Reads (Popup offen) neu gelesen.
+    last_mode: GpuMode,
 }
 
 impl GpuReader {
@@ -61,6 +64,7 @@ impl GpuReader {
             nvml: None,
             backoff: 0,
             pci_path: nvidia_pci_path(),
+            last_mode: read_mode(),
         }
     }
 
@@ -69,8 +73,11 @@ impl GpuReader {
     /// (`/dev/nvidia0` schließt → RTD3-Schlaf möglich). Wir wecken die dGPU **nie** selbst:
     /// NVML wird ausschließlich angefasst, wenn sie laut sysfs ohnehin schon `active` ist.
     pub fn read(&mut self, want_live: bool) -> GpuInfo {
+        if want_live {
+            self.last_mode = read_mode();
+        }
         let mut info = GpuInfo {
-            mode: read_mode(),
+            mode: self.last_mode,
             ..Default::default()
         };
 

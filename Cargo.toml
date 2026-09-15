@@ -17,6 +17,9 @@ nvml-wrapper = "0.10"
 # Nur für tokio::task::spawn_blocking (Metrik-Erfassung im Hintergrund, nie auf dem UI-Thread).
 # Das Runtime stellt libcosmic (cosmic::executor) bereit; hier nur die API.
 tokio = { version = "1", default-features = false, features = ["rt"] }
+# Für SctkPopupSettings der Wayland-Tooltips (echte xdg_popup-Surfaces, die über
+# den Fensterrand hinausragen dürfen). Gleiche Quelle/rev wie libcosmic → dedupliziert.
+iced_runtime = { git = "https://github.com/pop-os/libcosmic.git", rev = "417923fb" }
 
 [dependencies.libcosmic]
 git = "https://github.com/pop-os/libcosmic.git"
