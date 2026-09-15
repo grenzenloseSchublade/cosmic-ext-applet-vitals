@@ -1035,7 +1035,31 @@ impl AppModel {
             }
         }
 
-        // --- Anzeige ---
+        // --- Inhalt: WAS im Popup erscheint ---
+        let content_section = widget::settings::section().header(padded_heading("Inhalt"));
+        let content_section = toggle_item(
+            content_section,
+            "CPU-Temperatur anzeigen",
+            "Zeigt die CPU-Temperatur zusätzlich in der CPU-Zeile (Quelle: hwmon).",
+            c.show_cpu_temp,
+            Message::SetCpuTemp,
+        );
+        let content_section = toggle_item(
+            content_section,
+            "GPU im Schlaf ausblenden",
+            "Blendet die GPU-Zeile aus, wenn die dGPU per Runtime-PM schläft; verhindert unnötiges Aufwecken.",
+            c.hide_gpu_when_asleep,
+            Message::SetHideGpu,
+        );
+        let content_section = toggle_item(
+            content_section,
+            "Watt aufschlüsseln",
+            "Zeigt System/CPU/GPU-Leistung als getrennte Werte statt nur des Gesamtwerts.",
+            c.power_breakdown,
+            Message::SetPowerBreakdown,
+        );
+
+        // --- Format: WIE Werte formatiert sind ---
         // Knopf zykliert die Einheit; „⟳" signalisiert die Klick-Aktion, Wert zeigt den aktuellen Stand.
         let net_label = format!(
             "{}  ⟳",
@@ -1045,36 +1069,15 @@ impl AppModel {
                 _ => "MB/s (SI)",
             }
         );
-        let display_section = widget::settings::section().header(padded_heading("Anzeige"));
-        let display_section = toggle_item(
-            display_section,
-            "CPU-Temperatur anzeigen",
-            "Zeigt die CPU-Temperatur zusätzlich in der CPU-Zeile (Quelle: hwmon).",
-            c.show_cpu_temp,
-            Message::SetCpuTemp,
-        );
-        let display_section = toggle_item(
-            display_section,
+        let format_section = widget::settings::section().header(padded_heading("Format"));
+        let format_section = toggle_item(
+            format_section,
             "Temperatur in °F",
             "Alle Temperaturen in Fahrenheit statt Celsius.",
             c.fahrenheit,
             Message::SetFahrenheit,
         );
-        let display_section = toggle_item(
-            display_section,
-            "Monospace-Schrift",
-            "Feste Zeichenbreite — Werte springen beim Aktualisieren nicht.",
-            c.mono_font,
-            Message::SetMonoFont,
-        );
-        let display_section = toggle_item(
-            display_section,
-            "GPU im Schlaf ausblenden",
-            "Blendet die GPU-Zeile aus, wenn die dGPU per Runtime-PM schläft; verhindert unnötiges Aufwecken.",
-            c.hide_gpu_when_asleep,
-            Message::SetHideGpu,
-        );
-        let display_section = display_section.add(widget::settings::item_row(vec![
+        let format_section = format_section.add(widget::settings::item_row(vec![
             info_label(
                 "Netz-Einheit",
                 "Einheit für Netzwerk-Durchsatz: MB/s (SI, 10⁶), MiB/s (binär, 2²⁰) oder Mbit/s. Klick wechselt.",
@@ -1083,6 +1086,13 @@ impl AppModel {
                 .on_press(Message::CycleNetUnit)
                 .into(),
         ]));
+        let format_section = toggle_item(
+            format_section,
+            "Monospace-Schrift",
+            "Feste Zeichenbreite — Werte springen beim Aktualisieren nicht.",
+            c.mono_font,
+            Message::SetMonoFont,
+        );
 
         // --- Aktualisierung ---
         let interval_section = widget::settings::section()
@@ -1103,82 +1113,78 @@ impl AppModel {
                 .into(),
             ]));
 
-        // --- Darstellung ---
+        // --- Darstellung: Optik des Popups ---
+        let display_section = widget::settings::section().header(padded_heading("Darstellung"));
+        let display_section = toggle_item(
+            display_section,
+            "Balken im Popup (CPU/RAM/GPU)",
+            "Zeigt Auslastung zusätzlich als Fortschrittsbalken statt nur als Zahl.",
+            c.graphical,
+            Message::SetGraphical,
+        );
+        let display_section = toggle_item(
+            display_section,
+            "Verlaufs-Graphen (Sparklines)",
+            "Zeigt unter CPU, RAM, Netz und Watt einen Mini-Verlauf der letzten ~3 Minuten; die Historie läuft auch bei geschlossenem Popup mit.",
+            c.show_graphs,
+            Message::SetGraphs,
+        );
+        let display_section = sub_toggle_item(
+            display_section,
+            "Verlauf CPU",
+            "Sparkline unter der CPU-Zeile (nur bei aktiven Verlaufs-Graphen).",
+            c.graph_cpu,
+            Message::SetGraphCpu,
+        );
+        let display_section = sub_toggle_item(
+            display_section,
+            "Verlauf RAM",
+            "Sparkline unter der RAM-Zeile (nur bei aktiven Verlaufs-Graphen).",
+            c.graph_mem,
+            Message::SetGraphMem,
+        );
+        let display_section = sub_toggle_item(
+            display_section,
+            "Verlauf Netz",
+            "Sparkline unter der Netz-Zeile: ↓ voll, ↑ gedimmt (nur bei aktiven Verlaufs-Graphen).",
+            c.graph_net,
+            Message::SetGraphNet,
+        );
+        let display_section = sub_toggle_item(
+            display_section,
+            "Verlauf Watt",
+            "Sparkline unter der Watt-Zeile (nur bei aktiven Verlaufs-Graphen).",
+            c.graph_power,
+            Message::SetGraphPower,
+        );
+        let display_section = toggle_item(
+            display_section,
+            "Beschriftungen in Akzentfarbe",
+            "Färbt die fetten Metrik-Beschriftungen im Popup in der System-Akzentfarbe (COSMIC-Einstellungen → Desktop → Erscheinungsbild).",
+            c.accent_labels,
+            Message::SetAccentLabels,
+        );
+
+        // --- Panel: Anzeige in der Leiste ---
         let panel_metric_label = format!(
             "{}  ⟳",
             MetricKind::from_u8(c.panel_metric)
                 .unwrap_or(MetricKind::Cpu)
                 .label()
         );
-        let display2_section = widget::settings::section().header(padded_heading("Darstellung"));
-        let display2_section = toggle_item(
-            display2_section,
-            "Balken im Popup (CPU/RAM/GPU)",
-            "Zeigt Auslastung zusätzlich als Fortschrittsbalken statt nur als Zahl.",
-            c.graphical,
-            Message::SetGraphical,
-        );
-        let display2_section = toggle_item(
-            display2_section,
-            "Verlaufs-Graphen (Sparklines)",
-            "Zeigt unter CPU, RAM, Netz und Watt einen Mini-Verlauf der letzten ~3 Minuten; die Historie läuft auch bei geschlossenem Popup mit.",
-            c.show_graphs,
-            Message::SetGraphs,
-        );
-        let display2_section = toggle_item(
-            display2_section,
-            "· Verlauf CPU",
-            "Sparkline unter der CPU-Zeile (nur bei aktiven Verlaufs-Graphen).",
-            c.graph_cpu,
-            Message::SetGraphCpu,
-        );
-        let display2_section = toggle_item(
-            display2_section,
-            "· Verlauf RAM",
-            "Sparkline unter der RAM-Zeile (nur bei aktiven Verlaufs-Graphen).",
-            c.graph_mem,
-            Message::SetGraphMem,
-        );
-        let display2_section = toggle_item(
-            display2_section,
-            "· Verlauf Netz",
-            "Sparkline unter der Netz-Zeile: ↓ voll, ↑ gedimmt (nur bei aktiven Verlaufs-Graphen).",
-            c.graph_net,
-            Message::SetGraphNet,
-        );
-        let display2_section = toggle_item(
-            display2_section,
-            "· Verlauf Watt",
-            "Sparkline unter der Watt-Zeile (nur bei aktiven Verlaufs-Graphen).",
-            c.graph_power,
-            Message::SetGraphPower,
-        );
-        let display2_section = toggle_item(
-            display2_section,
-            "Beschriftungen in Akzentfarbe",
-            "Färbt die fetten Metrik-Beschriftungen im Popup in der System-Akzentfarbe (COSMIC-Einstellungen → Desktop → Erscheinungsbild).",
-            c.accent_labels,
-            Message::SetAccentLabels,
-        );
-        let display2_section = toggle_item(
-            display2_section,
-            "Watt aufschlüsseln",
-            "Zeigt System/CPU/GPU-Leistung als getrennte Zeilen statt einer kompakten Zeile.",
-            c.power_breakdown,
-            Message::SetPowerBreakdown,
-        );
-        let display2_section = toggle_item(
-            display2_section,
+        let panel_section = widget::settings::section().header(padded_heading("Panel"));
+        let panel_section = toggle_item(
+            panel_section,
             "Wert neben dem Panel-Icon",
-            "Zeigt den gewählten Messwert als Text direkt im Panel.",
+            "Zeigt den gewählten Messwert als Text direkt im Panel (nur horizontale Leiste).",
             c.panel_text,
             Message::SetPanelText,
         );
-        let display2_section = display2_section.add(widget::settings::item_row(vec![
-            info_label(
+        let panel_section = panel_section.add(widget::settings::item_row(vec![
+            indented(info_label(
                 "Panel-Wert",
                 "Welche Metrik neben dem Panel-Icon steht (CPU, RAM, Netz, GPU oder Watt). Klick wechselt.",
-            ),
+            )),
             widget::button::text(panel_metric_label)
                 .on_press(Message::CyclePanelMetric)
                 .into(),
@@ -1197,8 +1203,10 @@ impl AppModel {
 
         widget::settings::view_column(vec![
             order_section.into(),
+            content_section.into(),
+            format_section.into(),
             display_section.into(),
-            display2_section.into(),
+            panel_section.into(),
             interval_section.into(),
             reset.into(),
         ])
@@ -1225,8 +1233,7 @@ fn metric_value_info(label: &'static str) -> Option<&'static str> {
         "Netz" => "Datenrate der aktiven Schnittstelle.\n\
             • ↓ empfangen · ↑ senden · Typ (WLAN/LAN/VPN)\n\
             • Einheit unter „Netz-Einheit“ wählbar\n\
-            • Verlauf: Skala 0…≤ Fenster-Maximum, ↑ gedimmt;\n\
-            \u{2007}\u{2007}Hovern zeigt Werte und Zeitpunkt",
+            • Verlauf: Skala 0…≤ Fenster-Maximum, ↑ gedimmt; Hovern zeigt Werte und Zeitpunkt",
         "GPU" => "Dedizierte NVIDIA-GPU (NVML).\n\
             • „schläft“ — Stromsparmodus, wird nie geweckt\n\
             • „keine NVIDIA“ — keine dGPU gefunden\n\
@@ -1235,12 +1242,10 @@ fn metric_value_info(label: &'static str) -> Option<&'static str> {
         "Lüfter" => "Drehzahlen aller erkannten Lüfter (hwmon), in U/min.",
         "Kerne %" => "Auslastung je CPU-Kern in Prozent, Reihen zu je 6 Kernen.",
         "Watt" => "Leistungsaufnahme des Systems.\n\
-            • Gesamt: RAPL psys — „– · Netz“ heißt: am Netz\n\
-            \u{2007}\u{2007}nicht messbar (nur Akku-Messung verfügbar)\n\
+            • Gesamt: RAPL psys — „– · Netz“ heißt: am Netz nicht messbar (nur Akku-Messung verfügbar)\n\
             • CPU-Package · GPU (Schalter „Watt aufschlüsseln“)\n\
             • beim Laden: „Netzteil ≈“ psys + Ladeleistung\n\
-            • Verlauf: Skala 0…≤ Fenster-Maximum;\n\
-            \u{2007}\u{2007}Hovern zeigt Wert und Zeitpunkt",
+            • Verlauf: Skala 0…≤ Fenster-Maximum; Hovern zeigt Wert und Zeitpunkt",
         "Akku" => "Akku-Zustand.\n\
             • Spannung (V) · Status (lädt/entlädt/voll)\n\
             • Lade-/Entladeleistung in W, nur wenn Strom fließt",
@@ -1251,8 +1256,7 @@ fn metric_value_info(label: &'static str) -> Option<&'static str> {
         "Swap" => "Auslagerungsspeicher: % und belegt/gesamt GiB.\n\
             • Zeile erscheint nur, wenn Swap eingerichtet ist",
         "Load" => "Load Average 1 / 5 / 15 min.\n\
-            • Ø lauffähige Prozesse; Werte über der\n\
-            \u{2007}\u{2007}Kernzahl bedeuten Wartezeiten",
+            • Ø lauffähige Prozesse; Werte über der Kernzahl bedeuten Wartezeiten",
         "Uptime" => "Zeit seit dem letzten Systemstart.",
         "Netz Σ" => "Summe seit Systemstart (aktive Schnittstelle).\n\
             • ↓ empfangen · ↑ gesendet\n\
@@ -1383,6 +1387,26 @@ fn metric_or_bar<'a>(
     }
 }
 
+/// Rendert einen Info-Text strukturiert: Zeilen mit „• "-Präfix werden als
+/// echte Aufzählung gesetzt (Bullet-Spalte + hängender Einzug beim Umbruch),
+/// alle anderen Zeilen als normale Absätze. DIE eine Formatierung aller
+/// Info-Boxen (Einstellungen, Hauptansicht, Reset-Button).
+fn info_content<'a, M: 'a>(info: &'static str) -> Element<'a, M> {
+    let mut col = widget::column::with_capacity(info.lines().count())
+        .spacing(cosmic::theme::spacing().space_xxxs);
+    for line in info.lines() {
+        let el: Element<'a, M> = match line.strip_prefix("• ") {
+            Some(rest) => widget::row::with_capacity(2)
+                .push(widget::text("•").width(Length::Fixed(12.0)))
+                .push(widget::text(rest).width(Length::Fill))
+                .into(),
+            None => widget::text(line).into(),
+        };
+        col = col.push(el);
+    }
+    col.into()
+}
+
 /// Einheitlich gestylte Info-Box um beliebigen Inhalt — die EINE Stelle für
 /// Optik aller Erklär-Tooltips. Wie `Container::Dropdown` (Komponenten-
 /// Hintergrund, der die Box sichtbar vom Popup absetzt — der Standard-Tooltip
@@ -1396,7 +1420,7 @@ fn info_box<'a>(
 ) -> Element<'a, Message> {
     widget::tooltip(
         content,
-        widget::container(widget::text(info)).max_width(280.0),
+        widget::container(info_content(info)).max_width(300.0),
         position,
     )
     .class(cosmic::theme::Container::custom(info_box_style))
@@ -1465,8 +1489,8 @@ fn metric_tooltip<'a>(
         }),
         move || {
             widget::autosize::autosize(
-                widget::container(widget::text(info))
-                    .max_width(280.0)
+                widget::container(info_content(info))
+                    .max_width(300.0)
                     .padding(cosmic::theme::spacing().space_s)
                     .class(cosmic::theme::Container::custom(info_box_style)),
                 METRIC_TIP_AUTOSIZE.clone(),
@@ -1525,6 +1549,15 @@ fn padded_heading_info<'a>(title: &'static str, info: &'static str) -> Element<'
     .into()
 }
 
+/// Rückt ein Element als Unterpunkt ein (gemeinsame Einzugs-Konvention für
+/// Settings-Unterzeilen; Breite bleibt Fill, damit Controls bündig bleiben).
+fn indented<'a>(el: Element<'a, Message>) -> Element<'a, Message> {
+    widget::container(el)
+        .padding([0, 0, 0, cosmic::theme::spacing().space_m])
+        .width(Length::Fill)
+        .into()
+}
+
 /// Hängt eine Toggler-Zeile mit Info-Icon an eine Settings-Section (entfernt die Wiederholung).
 fn toggle_item<'a>(
     section: widget::settings::Section<'a, Message>,
@@ -1535,6 +1568,21 @@ fn toggle_item<'a>(
 ) -> widget::settings::Section<'a, Message> {
     section.add(widget::settings::item_row(vec![
         info_label(title, info),
+        widget::toggler(value).on_toggle(msg).into(),
+    ]))
+}
+
+/// Wie `toggle_item`, aber als eingerückter Unterpunkt (z. B. die
+/// Pro-Metrik-Schalter unter dem Verlaufs-Master).
+fn sub_toggle_item<'a>(
+    section: widget::settings::Section<'a, Message>,
+    title: &'static str,
+    info: &'static str,
+    value: bool,
+    msg: fn(bool) -> Message,
+) -> widget::settings::Section<'a, Message> {
+    section.add(widget::settings::item_row(vec![
+        indented(info_label(title, info)),
         widget::toggler(value).on_toggle(msg).into(),
     ]))
 }
