@@ -2,6 +2,16 @@
 
 ## Unveröffentlicht
 
+- Sparklines vereinheitlicht: runde Linien-Ecken/-Enden statt Miter-Spitzen,
+  Zeichenbereich um die halbe Strichbreite eingerückt (keine an der
+  Canvas-Kante abgeschnittene „dicke Grundlinie" mehr), Fläche endet an der
+  Kurven-Basislinie; Nur-Null-Historie (z. B. Watt ohne psys) zeichnet nichts.
+  Neue Minimal-Beschriftung oben rechts: Skalen-Maximum (nur autoskalierte
+  Graphen, „≤ 3,2 MB/s") und Zeitfenster („3 min", folgt dem Intervall).
+  Wert-Zeile und Graph bilden ein Listen-Item — kein Divider mehr dazwischen
+  (auch die Kerne-Blöcke sind jetzt dividerfrei).
+- Disk-I/O: virtuelle/gestapelte Devices (zram, dm-, md) explizit
+  ausgeschlossen — deren I/O erscheint bereits auf den physischen Laufwerken.
 - **Verlaufs-Graphen (Sparklines):** Mini-Verlauf (~3 min, 120 Samples) unter
   CPU, RAM, Netz (↓ voll, ↑ gedimmt) und Watt — als Canvas in der
   System-Akzentfarbe (Linie + zarte Fläche). Historie läuft auch bei

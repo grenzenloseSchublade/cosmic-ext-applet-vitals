@@ -635,16 +635,33 @@ impl AppModel {
         let mut any = false;
         for id in &self.config.metric_order {
             if let Some(kind) = MetricKind::from_u8(*id) {
-                for row in self.metric_rows(kind) {
-                    list = list.add(row);
-                    any = true;
+                let rows = self.metric_rows(kind);
+                if rows.is_empty() {
+                    continue;
                 }
+                // Alle Zeilen EINER Metrik (Werte + Balken/Sparkline/Kern-Blöcke)
+                // als EIN Listen-Item — die automatischen list_column-Divider
+                // trennen nur noch Metriken, nicht deren Binnenzeilen.
+                let bundle: Element<'_, Message> = if rows.len() == 1 {
+                    rows.into_iter().next().unwrap()
+                } else {
+                    widget::column::with_children(rows)
+                        .spacing(cosmic::theme::spacing().space_xxs)
+                        .into()
+                };
+                list = list.add(bundle);
+                any = true;
             }
         }
         if !any {
             list = list.add(widget::text("Keine Metrik aktiv — über das Zahnrad aktivieren."));
         }
         list.into()
+    }
+
+    /// Zeitfenster der Sparkline-Historie in Sekunden (Samples × Intervall).
+    fn history_span_s(&self) -> u64 {
+        HISTORY_LEN as u64 * self.config.interval_ms.max(250) / 1000
     }
 
     /// Die (0..n) Zeilen einer Metrik — leer, wenn deaktiviert oder keine Daten.
@@ -674,6 +691,8 @@ impl AppModel {
                     rows.push(sparkline(
                         vec![self.history.cpu.iter().copied().collect()],
                         Some(100.0),
+                        None,
+                        self.history_span_s(),
                     ));
                 }
                 rows
@@ -695,6 +714,8 @@ impl AppModel {
                     rows.push(sparkline(
                         vec![self.history.mem.iter().copied().collect()],
                         Some(100.0),
+                        None,
+                        self.history_span_s(),
                     ));
                 }
                 rows
@@ -717,12 +738,20 @@ impl AppModel {
                 )];
                 if c.show_graphs && c.graph_net {
                     // ↓ voll, ↑ gedimmt; gemeinsames Maximum (autoskaliert).
+                    let peak = self
+                        .history
+                        .net_down
+                        .iter()
+                        .chain(self.history.net_up.iter())
+                        .fold(0.0f32, |a, &v| a.max(v));
                     rows.push(sparkline(
                         vec![
                             self.history.net_down.iter().copied().collect(),
                             self.history.net_up.iter().copied().collect(),
                         ],
                         None,
+                        (peak > 0.0).then(|| fmt_rate(peak as f64, c)),
+                        self.history_span_s(),
                     ));
                 }
                 rows
@@ -839,9 +868,12 @@ impl AppModel {
                     self.popup,
                 )];
                 if c.show_graphs && c.graph_power {
+                    let peak = self.history.power.iter().fold(0.0f32, |a, &v| a.max(v));
                     rows.push(sparkline(
                         vec![self.history.power.iter().copied().collect()],
                         None,
+                        (peak > 0.0).then(|| format!("{peak:.0} W")),
+                        self.history_span_s(),
                     ));
                 }
                 rows
@@ -1168,7 +1200,7 @@ fn metric_value_info(label: &'static str) -> Option<&'static str> {
         "Swap" => "Belegter Auslagerungsspeicher in Prozent und GiB (belegt/gesamt).",
         "Load" => "Load Average über 1, 5 und 15 Minuten — durchschnittliche Zahl lauffähiger Prozesse; Werte über der Kernzahl bedeuten Wartezeiten.",
         "Uptime" => "Zeit seit dem letzten Systemstart.",
-        "Netz Σ" => "Kumulierter Verbrauch der aktiven Schnittstelle seit Systemstart: ↓ empfangen, ↑ gesendet.",
+        "Netz Σ" => "Kumulierter Verbrauch der aktiven Schnittstelle seit Systemstart: ↓ empfangen, ↑ gesendet. Bei Wechsel der Schnittstelle (WLAN↔LAN) zählt die neue ab ihrem eigenen Stand.",
         _ => return None,
     })
 }
@@ -1466,6 +1498,26 @@ struct Sparkline {
     series: Vec<Vec<f32>>,
     /// Normierungs-Maximum; `None` = gemeinsames Maximum der Serien (autoskaliert).
     fixed_max: Option<f32>,
+    /// Fertig formatiertes Skalen-Maximum für die Beschriftung (nur autoskaliert).
+    caption_max: Option<String>,
+    /// Zeitfenster-Beschriftung („3 min").
+    span_label: String,
+}
+
+/// Strichbreite der Sparkline-Kurven; `SPARK_HW` = halbe Breite, um den
+/// Zeichenbereich so einzurücken, dass die Antialiasing-Kante nie an der
+/// Canvas-Clip-Grenze abgeschnitten wird (sonst „dicke Grundlinie").
+const SPARK_STROKE_W: f32 = 1.5;
+const SPARK_HW: f32 = SPARK_STROKE_W / 2.0;
+
+/// Der EINE Strich-Stil aller Sparklines: runde Ecken/Enden statt der
+/// Miter-Defaults, die bei zackigen Daten (Netz-Peaks) Spitzen erzeugen.
+fn spark_stroke(color: cosmic::iced::Color) -> widget::canvas::Stroke<'static> {
+    widget::canvas::Stroke::default()
+        .with_color(color)
+        .with_width(SPARK_STROKE_W)
+        .with_line_join(widget::canvas::LineJoin::Round)
+        .with_line_cap(widget::canvas::LineCap::Round)
 }
 
 impl<Message> widget::canvas::Program<Message, cosmic::Theme> for Sparkline {
@@ -1479,22 +1531,24 @@ impl<Message> widget::canvas::Program<Message, cosmic::Theme> for Sparkline {
         bounds: Rectangle,
         _cursor: cosmic::iced::mouse::Cursor,
     ) -> Vec<widget::canvas::Geometry> {
-        use widget::canvas::{Frame, Path, Stroke};
+        use widget::canvas::{Frame, Path};
         let mut frame = Frame::new(renderer, bounds.size());
         let (w, h) = (bounds.width, bounds.height);
-        let max = self
-            .fixed_max
-            .unwrap_or_else(|| {
-                self.series
-                    .iter()
-                    .flatten()
-                    .fold(0.0f32, |a, &v| a.max(v))
-            })
-            .max(1e-6);
+        let raw_max = self.fixed_max.unwrap_or_else(|| {
+            self.series
+                .iter()
+                .flatten()
+                .fold(0.0f32, |a, &v| a.max(v))
+        });
+        let max = raw_max.max(1e-6);
         let accent: cosmic::iced::Color = theme.cosmic().accent_color().into();
 
+        // Nur-Null-Historie (z. B. Watt ohne psys): nichts zeichnen —
+        // eine flache Linie auf der Grundkante wäre nur Rauschen.
+        let has_data = self.fixed_max.is_some() || raw_max > 0.0;
+
         for (si, data) in self.series.iter().enumerate() {
-            if data.len() < 2 {
+            if data.len() < 2 || !has_data || data.iter().all(|&v| v <= 0.0) {
                 continue;
             }
             let n = HISTORY_LEN.max(2) as f32;
@@ -1502,7 +1556,9 @@ impl<Message> widget::canvas::Program<Message, cosmic::Theme> for Sparkline {
             let x_of = |i: usize| {
                 w * ((i + HISTORY_LEN - data.len()) as f32) / (n - 1.0)
             };
-            let y_of = |v: f32| h - (v / max).clamp(0.0, 1.0) * (h - 1.0) - 0.5;
+            // Zeichenbereich [SPARK_HW, h-SPARK_HW]: die halbe Strichbreite als
+            // Rand, damit die Linie oben/unten nie angeschnitten wird.
+            let y_of = |v: f32| h - (v / max).clamp(0.0, 1.0) * (h - 2.0 * SPARK_HW) - SPARK_HW;
 
             let line = Path::new(|b| {
                 b.move_to(cosmic::iced::Point::new(x_of(0), y_of(data[0])));
@@ -1514,17 +1570,19 @@ impl<Message> widget::canvas::Program<Message, cosmic::Theme> for Sparkline {
             let alpha = if si == 0 { 1.0 } else { 0.45 };
             let mut color = accent;
             color.a = alpha;
-            frame.stroke(&line, Stroke::default().with_color(color).with_width(1.5));
+            frame.stroke(&line, spark_stroke(color));
 
             if si == 0 {
-                // Fläche unter der ersten Serie, sehr zart.
+                // Fläche unter der ersten Serie, sehr zart; endet an derselben
+                // Basislinie wie die Kurve (kein Haarspalt zur Linie).
+                let base = h - SPARK_HW;
                 let area = Path::new(|b| {
-                    b.move_to(cosmic::iced::Point::new(x_of(0), h));
+                    b.move_to(cosmic::iced::Point::new(x_of(0), base));
                     b.line_to(cosmic::iced::Point::new(x_of(0), y_of(data[0])));
                     for (i, &v) in data.iter().enumerate().skip(1) {
                         b.line_to(cosmic::iced::Point::new(x_of(i), y_of(v)));
                     }
-                    b.line_to(cosmic::iced::Point::new(x_of(data.len() - 1), h));
+                    b.line_to(cosmic::iced::Point::new(x_of(data.len() - 1), base));
                     b.close();
                 });
                 let mut fill = accent;
@@ -1532,16 +1590,58 @@ impl<Message> widget::canvas::Program<Message, cosmic::Theme> for Sparkline {
                 frame.fill(&area, fill);
             }
         }
+
+        // Minimal-Beschriftung oben rechts: Skalen-Max (nur autoskaliert)
+        // + Zeitfenster, winzig und stark gedimmt — informativ, nicht dominant.
+        let caption = match (&self.caption_max, has_data) {
+            (Some(mx), true) => format!("≤ {mx} · {}", self.span_label),
+            _ => self.span_label.clone(),
+        };
+        if !caption.is_empty() {
+            let mut text_color: cosmic::iced::Color =
+                theme.cosmic().background.component.on.into();
+            text_color.a = 0.35;
+            frame.fill_text(widget::canvas::Text {
+                content: caption,
+                position: cosmic::iced::Point::new(w - 2.0, 0.0),
+                color: text_color,
+                size: cosmic::iced::Pixels(9.0),
+                align_x: cosmic::iced::alignment::Horizontal::Right.into(),
+                align_y: cosmic::iced::alignment::Vertical::Top.into(),
+                ..Default::default()
+            });
+        }
         vec![frame.into_geometry()]
     }
 }
 
 /// Sparkline-Zeile unter einer Metrik (volle Breite, feste Höhe).
-fn sparkline<'a>(series: Vec<Vec<f32>>, fixed_max: Option<f32>) -> Element<'a, Message> {
-    widget::canvas(Sparkline { series, fixed_max })
-        .width(Length::Fill)
-        .height(Length::Fixed(SPARK_HEIGHT))
-        .into()
+/// `caption_max`: fertig formatiertes Skalen-Maximum (nur autoskalierte
+/// Graphen); `span_s`: Zeitfenster der Historie in Sekunden.
+fn sparkline<'a>(
+    series: Vec<Vec<f32>>,
+    fixed_max: Option<f32>,
+    caption_max: Option<String>,
+    span_s: u64,
+) -> Element<'a, Message> {
+    widget::canvas(Sparkline {
+        series,
+        fixed_max,
+        caption_max,
+        span_label: fmt_span(span_s),
+    })
+    .width(Length::Fill)
+    .height(Length::Fixed(SPARK_HEIGHT))
+    .into()
+}
+
+/// Zeitfenster kompakt: „45 s" unter einer Minute, sonst „3 min".
+fn fmt_span(s: u64) -> String {
+    if s < 60 {
+        format!("{s} s")
+    } else {
+        format!("{} min", s / 60)
+    }
 }
 
 /// Uptime menschenlesbar: „3 d 4 h 12 min" (führende Null-Einheiten entfallen).

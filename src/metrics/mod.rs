@@ -339,7 +339,16 @@ fn read_disk_sectors() -> Option<(u64, u64)> {
         // Felder: major minor name reads reads_merged sectors_read ms_read
         //         writes writes_merged sectors_written …
         let name = f.nth(2)?;
-        if is_partition(name) || name.starts_with("loop") || name.starts_with("ram") {
+        // Virtuelle/gestapelte Devices (loop, ram, zram, device-mapper, RAID)
+        // überspringen: deren I/O erscheint bereits auf den darunterliegenden
+        // physischen Laufwerken — mitzählen wäre Doppelzählung.
+        if is_partition(name)
+            || name.starts_with("loop")
+            || name.starts_with("ram")
+            || name.starts_with("zram")
+            || name.starts_with("dm-")
+            || name.starts_with("md")
+        {
             continue;
         }
         let sectors_read: u64 = f.nth(2).and_then(|x| x.parse().ok())?;
