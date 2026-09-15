@@ -1763,19 +1763,8 @@ impl<Message> widget::canvas::Program<Message, cosmic::Theme> for Sparkline {
         // eine flache Linie auf der Grundkante wäre nur Rauschen.
         let has_data = self.fixed_max.is_some() || raw_max > 0.0;
 
-        // Explizite Null-Linie an der Unterkante — dieselbe dezente Punkt-Optik
-        // wie die Max-Referenzlinie oben (Koordinaten-Paar: unten 0, oben ≤ max).
-        // Erst sichtbar, wenn sich tatsächlich Werte von ihr abheben; der
-        // 2,5-px-Mindestabstand in `y_of` hält die Kurve von ihr getrennt.
-        let any_positive = self.series.iter().flatten().any(|&v| v > 0.0);
-        let has_samples = self.series.first().is_some_and(|s| s.len() >= 2);
-        if any_positive && has_samples {
-            let mut rule_color: cosmic::iced::Color =
-                theme.cosmic().background.component.on.into();
-            rule_color.a = 0.25;
-            dotted_rule(&mut frame, h - SPARK_HW, w, rule_color);
-        }
-
+        // Bewusst KEINE explizite Null-Linie an der Unterkante (ausprobiert,
+        // wieder entfernt): Kurve + zarte Fläche wirken ohne sie ruhiger.
         for (si, data) in self.series.iter().enumerate() {
             if data.len() < 2 || !has_data || data.iter().all(|&v| v <= 0.0) {
                 continue;

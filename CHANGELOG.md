@@ -2,9 +2,6 @@
 
 ## Unveröffentlicht
 
-- Sparklines: explizite feine gepunktete **Null-Linie** an der Unterkante
-  aller Graphen (Gegenstück zur Max-Linie oben — unten 0, oben ≤ max);
-  erscheint erst, wenn Werte vorhanden sind, die sich von ihr abheben.
 - **Sparkline-Hover:** Cursor über einem Graphen zeigt Führungslinie, Marker
   und Wert(e) mit Zeit-Offset in der Textzone („↓ 2,1 M/s ↑ 300 K/s · −45 s").
 - Netz-Sparkline: Upload-Serie zeichnet nur noch bei Traffic (keine
