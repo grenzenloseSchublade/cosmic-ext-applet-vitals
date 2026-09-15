@@ -201,6 +201,10 @@ struct History {
     net_down: VecDeque<f32>,
     net_up: VecDeque<f32>,
     power: VecDeque<f32>,
+    /// Letzter gültiger Watt-Wert: Messlücken (`sys_w == None` beim ersten
+    /// Sample, Sanity-Reject, Resume) würden sonst als 0 gepuffert und
+    /// zeichneten künstliche Abwärts-Zacken in die Kurve.
+    last_power: f32,
 }
 
 impl History {
@@ -215,7 +219,8 @@ impl History {
         push(&mut self.mem, mem_pct(m));
         push(&mut self.net_down, m.net_down_bps as f32);
         push(&mut self.net_up, m.net_up_bps as f32);
-        push(&mut self.power, m.power.sys_w.unwrap_or(0.0));
+        self.last_power = m.power.sys_w.unwrap_or(self.last_power);
+        push(&mut self.power, self.last_power);
     }
 }
 
@@ -232,6 +237,9 @@ pub struct AppModel {
     /// True, solange eine Hintergrund-Erfassung läuft (In-Flight-Guard gegen Thread-Stau,
     /// falls NVML einmal hängt).
     refreshing: bool,
+    /// Beim Popup-Öffnen wurde ein Live-Refresh vom In-Flight-Guard verworfen —
+    /// nach Abschluss der laufenden Erfassung sofort nachholen.
+    pending_live: bool,
     ui_mode: ViewMode,
     /// Verlaufswerte für die Sparklines.
     history: History,
@@ -297,6 +305,11 @@ impl AppModel {
     /// dass sich Erfassungen stauen, falls eine (z. B. NVML) hängt.
     fn spawn_refresh(&mut self, live: bool) -> Task<cosmic::Action<Message>> {
         if self.refreshing {
+            // Live-Wunsch nicht verlieren (Popup gerade geöffnet, Tick läuft):
+            // nach Abschluss der laufenden Erfassung sofort nachholen.
+            if live {
+                self.pending_live = true;
+            }
             return Task::none();
         }
         self.refreshing = true;
@@ -352,6 +365,7 @@ impl cosmic::Application for AppModel {
             collector,
             metrics,
             refreshing: false,
+            pending_live: false,
             ui_mode: ViewMode::Metrics,
             history: History::default(),
         };
@@ -382,6 +396,11 @@ impl cosmic::Application for AppModel {
                 self.history.push(&m);
                 self.metrics = m;
                 self.refreshing = false;
+                if self.pending_live && self.popup.is_some() {
+                    self.pending_live = false;
+                    return self.spawn_refresh(true);
+                }
+                self.pending_live = false;
             }
             Message::UpdateConfig(mut config) => {
                 config.metric_order = normalize_order(&config.metric_order);
@@ -696,6 +715,7 @@ impl AppModel {
                         Some(100.0),
                         None,
                         self.history_span_s(),
+                        Box::new(|v| format!("{v:.0} %")),
                     ));
                 }
                 rows
@@ -719,6 +739,7 @@ impl AppModel {
                         Some(100.0),
                         None,
                         self.history_span_s(),
+                        Box::new(|v| format!("{v:.0} %")),
                     ));
                 }
                 rows
@@ -755,6 +776,10 @@ impl AppModel {
                         None,
                         (peak > 0.0).then(|| fmt_rate(peak as f64, c)),
                         self.history_span_s(),
+                        {
+                            let unit = c.net_unit;
+                            Box::new(move |v| fmt_rate_unit(v as f64, unit))
+                        },
                     ));
                 }
                 rows
@@ -877,6 +902,7 @@ impl AppModel {
                         None,
                         (peak > 0.0).then(|| format!("{peak:.0} W")),
                         self.history_span_s(),
+                        Box::new(|v| format!("{v:.1} W")),
                     ));
                 }
                 rows
@@ -1505,6 +1531,10 @@ struct Sparkline {
     caption_max: Option<String>,
     /// Zeitfenster-Beschriftung („3 min").
     span_label: String,
+    /// Zeitfenster in Sekunden (für den Zeit-Offset beim Hovern).
+    span_s: u64,
+    /// Formatiert einen Rohwert der Serie für die Hover-Anzeige.
+    format_value: Box<dyn Fn(f32) -> String>,
 }
 
 /// Strichbreite der Sparkline-Kurven; `SPARK_HW` = halbe Breite, um den
@@ -1523,12 +1553,67 @@ fn spark_stroke(color: cosmic::iced::Color) -> widget::canvas::Stroke<'static> {
         .with_line_cap(widget::canvas::LineCap::Round)
 }
 
+impl Sparkline {
+    /// x-Position eines Sample-Index einer Serie der Länge `len`:
+    /// die x-Achse ist auf `HISTORY_LEN` fixiert, kürzere Historie läuft
+    /// von rechts ein (links Leerraum).
+    fn x_of(w: f32, len: usize, i: usize) -> f32 {
+        let n = HISTORY_LEN.max(2) as f32;
+        w * ((i + HISTORY_LEN - len) as f32) / (n - 1.0)
+    }
+
+    /// y-Position eines Werts. Zeichenbereich [Textzone + halbe Strichbreite,
+    /// h - halbe Strichbreite]: oben bleibt die Beschriftung frei, unten wird
+    /// die Linie nie an der Canvas-Kante angeschnitten.
+    fn y_of(h: f32, max: f32, v: f32) -> f32 {
+        let top = SPARK_TEXT_ZONE + SPARK_HW;
+        h - (v / max).clamp(0.0, 1.0) * (h - top - SPARK_HW) - SPARK_HW
+    }
+}
+
 impl<Message> widget::canvas::Program<Message, cosmic::Theme> for Sparkline {
-    type State = ();
+    /// Hover-Position (bounds-relativ); `None` = Cursor nicht über dem Graph.
+    type State = Option<cosmic::iced::Point>;
+
+    fn update(
+        &self,
+        state: &mut Self::State,
+        event: &widget::canvas::Event,
+        bounds: Rectangle,
+        cursor: cosmic::iced::mouse::Cursor,
+    ) -> Option<widget::canvas::Action<Message>> {
+        use cosmic::iced::mouse;
+        if let widget::canvas::Event::Mouse(
+            mouse::Event::CursorMoved { .. }
+            | mouse::Event::CursorEntered
+            | mouse::Event::CursorLeft,
+        ) = event
+        {
+            let new = cursor.position_in(bounds);
+            if *state != new {
+                *state = new;
+                return Some(widget::canvas::Action::request_redraw());
+            }
+        }
+        None
+    }
+
+    fn mouse_interaction(
+        &self,
+        state: &Self::State,
+        _bounds: Rectangle,
+        _cursor: cosmic::iced::mouse::Cursor,
+    ) -> cosmic::iced::mouse::Interaction {
+        if state.is_some() {
+            cosmic::iced::mouse::Interaction::Crosshair
+        } else {
+            cosmic::iced::mouse::Interaction::default()
+        }
+    }
 
     fn draw(
         &self,
-        _state: &Self::State,
+        state: &Self::State,
         renderer: &cosmic::Renderer,
         theme: &cosmic::Theme,
         bounds: Rectangle,
@@ -1554,31 +1639,22 @@ impl<Message> widget::canvas::Program<Message, cosmic::Theme> for Sparkline {
             if data.len() < 2 || !has_data || data.iter().all(|&v| v <= 0.0) {
                 continue;
             }
-            let n = HISTORY_LEN.max(2) as f32;
-            // Von rechts einlaufen: fehlende Historie lässt links Leerraum.
-            let x_of = |i: usize| {
-                w * ((i + HISTORY_LEN - data.len()) as f32) / (n - 1.0)
-            };
-            // Zeichenbereich [Textzone + halbe Strichbreite, h - halbe
-            // Strichbreite]: oben bleibt die Beschriftung frei, unten wird die
-            // Linie nie an der Canvas-Kante angeschnitten.
-            let top = SPARK_TEXT_ZONE + SPARK_HW;
-            let y_of =
-                |v: f32| h - (v / max).clamp(0.0, 1.0) * (h - top - SPARK_HW) - SPARK_HW;
-
-            let line = Path::new(|b| {
-                b.move_to(cosmic::iced::Point::new(x_of(0), y_of(data[0])));
-                for (i, &v) in data.iter().enumerate().skip(1) {
-                    b.line_to(cosmic::iced::Point::new(x_of(i), y_of(v)));
-                }
-            });
+            let x_of = |i: usize| Self::x_of(w, data.len(), i);
+            let y_of = |v: f32| Self::y_of(h, max, v);
             // Erste Serie voll, weitere gedimmt (Netz ↑ neben ↓).
             let alpha = if si == 0 { 1.0 } else { 0.45 };
             let mut color = accent;
             color.a = alpha;
-            frame.stroke(&line, spark_stroke(color));
 
             if si == 0 {
+                let line = Path::new(|b| {
+                    b.move_to(cosmic::iced::Point::new(x_of(0), y_of(data[0])));
+                    for (i, &v) in data.iter().enumerate().skip(1) {
+                        b.line_to(cosmic::iced::Point::new(x_of(i), y_of(v)));
+                    }
+                });
+                frame.stroke(&line, spark_stroke(color));
+
                 // Fläche unter der ersten Serie, sehr zart; endet an derselben
                 // Basislinie wie die Kurve (kein Haarspalt zur Linie).
                 let base = h - SPARK_HW;
@@ -1594,6 +1670,37 @@ impl<Message> widget::canvas::Program<Message, cosmic::Theme> for Sparkline {
                 let mut fill = accent;
                 fill.a = 0.12;
                 frame.fill(&area, fill);
+            } else {
+                // Zweitserie (Netz ↑): NUR dort zeichnen, wo Traffic ist —
+                // sonst legt sich ihre Null-Linie auf die Basislinie der
+                // Erstserie und die addierte Deckung wirkt „fett". Läufe mit
+                // v > 0 werden um je einen Nachbarpunkt erweitert, damit die
+                // Flanken vollständig sind.
+                let mut run_start: Option<usize> = None;
+                let draw_run = |from: usize, to: usize, frame: &mut Frame| {
+                    let a = from.saturating_sub(1);
+                    let b_end = (to + 1).min(data.len() - 1);
+                    if b_end <= a {
+                        return;
+                    }
+                    let seg = Path::new(|b| {
+                        b.move_to(cosmic::iced::Point::new(x_of(a), y_of(data[a])));
+                        for i in (a + 1)..=b_end {
+                            b.line_to(cosmic::iced::Point::new(x_of(i), y_of(data[i])));
+                        }
+                    });
+                    frame.stroke(&seg, spark_stroke(color));
+                };
+                for (i, &v) in data.iter().enumerate() {
+                    if v > 0.0 {
+                        run_start.get_or_insert(i);
+                    } else if let Some(s) = run_start.take() {
+                        draw_run(s, i - 1, &mut frame);
+                    }
+                }
+                if let Some(s) = run_start {
+                    draw_run(s, data.len() - 1, &mut frame);
+                }
             }
         }
 
@@ -1626,17 +1733,81 @@ impl<Message> widget::canvas::Program<Message, cosmic::Theme> for Sparkline {
             );
         }
 
-        // Minimal-Beschriftung oben rechts: Skalen-Max (nur autoskaliert)
-        // + Zeitfenster, winzig und stark gedimmt — informativ, nicht dominant.
-        let caption = match (&self.caption_max, has_data) {
-            (Some(mx), true) => format!("≤ {mx} · {}", self.span_label),
-            _ => self.span_label.clone(),
+        // --- Hover: Crosshair + Marker + Werte in der Textzone ---
+        // Die Textzone ist kurvenfrei reserviert; der Hover-Text ersetzt dort
+        // temporär die Standard-Beschriftung (kein Hintergrund-Chip nötig).
+        let mut hover_caption: Option<String> = None;
+        if let (Some(p), Some(first), true) = (state, self.series.first(), has_data) {
+            if first.len() >= 2 {
+                let n = HISTORY_LEN.max(2) as f32;
+                // Cursor-x → globaler Sample-Slot → Index in der Serie.
+                let slot = (p.x / w * (n - 1.0)).round() as isize;
+                let idx = slot - (HISTORY_LEN - first.len()) as isize;
+                if (0..first.len() as isize).contains(&idx) {
+                    let idx = idx as usize;
+                    let x = Self::x_of(w, first.len(), idx);
+                    // Vertikale Führungslinie über den Kurvenbereich.
+                    let mut guide = text_color;
+                    guide.a = 0.3;
+                    frame.stroke(
+                        &Path::line(
+                            cosmic::iced::Point::new(x, SPARK_TEXT_ZONE + SPARK_HW),
+                            cosmic::iced::Point::new(x, h - SPARK_HW),
+                        ),
+                        spark_stroke(guide).with_width(1.0),
+                    );
+                    // Marker auf der Erstserie.
+                    frame.fill(
+                        &Path::circle(
+                            cosmic::iced::Point::new(x, Self::y_of(h, max, first[idx])),
+                            2.5,
+                        ),
+                        accent,
+                    );
+                    // Wert(e) + Zeit-Offset: „↓ 2,1 M/s ↑ 300 K/s · −45 s".
+                    let ago_s = (first.len() - 1 - idx) as u64 * self.span_s
+                        / HISTORY_LEN.max(1) as u64;
+                    let when = if ago_s == 0 {
+                        "jetzt".to_string()
+                    } else {
+                        format!("−{}", fmt_span(ago_s))
+                    };
+                    let vals = match self.series.get(1).and_then(|s| s.get(idx)) {
+                        Some(&up) => format!(
+                            "↓ {} ↑ {}",
+                            (self.format_value)(first[idx]),
+                            (self.format_value)(up)
+                        ),
+                        None => (self.format_value)(first[idx]),
+                    };
+                    hover_caption = Some(format!("{vals} · {when}"));
+                }
+            }
+        }
+
+        // Minimal-Beschriftung oben rechts: beim Hovern Wert+Zeit (voll
+        // deckend), sonst Skalen-Max (nur autoskaliert) + Zeitfenster,
+        // winzig und stark gedimmt — informativ, nicht dominant.
+        let (caption, cap_color) = match hover_caption {
+            Some(hc) => {
+                let mut c: cosmic::iced::Color =
+                    theme.cosmic().background.component.on.into();
+                c.a = 0.9;
+                (hc, c)
+            }
+            None => (
+                match (&self.caption_max, has_data) {
+                    (Some(mx), true) => format!("≤ {mx} · {}", self.span_label),
+                    _ => self.span_label.clone(),
+                },
+                text_color,
+            ),
         };
         if !caption.is_empty() {
             frame.fill_text(widget::canvas::Text {
                 content: caption,
                 position: cosmic::iced::Point::new(w - 2.0, 0.0),
-                color: text_color,
+                color: cap_color,
                 size: cosmic::iced::Pixels(9.0),
                 align_x: cosmic::iced::alignment::Horizontal::Right.into(),
                 align_y: cosmic::iced::alignment::Vertical::Top.into(),
@@ -1655,12 +1826,15 @@ fn sparkline<'a>(
     fixed_max: Option<f32>,
     caption_max: Option<String>,
     span_s: u64,
+    format_value: Box<dyn Fn(f32) -> String>,
 ) -> Element<'a, Message> {
     widget::canvas(Sparkline {
         series,
         fixed_max,
         caption_max,
         span_label: fmt_span(span_s),
+        span_s,
+        format_value,
     })
     .width(Length::Fill)
     .height(Length::Fixed(SPARK_HEIGHT))
@@ -1719,7 +1893,12 @@ fn fmt_temp_val(c: f32, cfg: &Config) -> String {
 
 /// Bytes/s menschenlesbar gemäß gewählter Einheit.
 fn fmt_rate(bps: f64, cfg: &Config) -> String {
-    match cfg.net_unit {
+    fmt_rate_unit(bps, cfg.net_unit)
+}
+
+/// Wie `fmt_rate`, aber ohne Config-Borrow — für move-Closures (Sparkline-Hover).
+fn fmt_rate_unit(bps: f64, net_unit: u8) -> String {
+    match net_unit {
         2 => {
             let bits = bps * 8.0;
             if bits >= 1e9 {

@@ -205,6 +205,9 @@ impl Collector {
         // Nach Suspend Zählerzustand verwerfen, damit kein Delta über die Schlafphase entsteht.
         if self.paused {
             self.power.reset();
+            // Auch Netz-/Disk-Samples: deren Deltas haben keine Sanity-Klammer wie RAPL.
+            self.prev_net = None;
+            self.prev_disk = None;
         }
         m.power = self.power.read();
 

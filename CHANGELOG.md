@@ -2,6 +2,13 @@
 
 ## Unveröffentlicht
 
+- **Sparkline-Hover:** Cursor über einem Graphen zeigt Führungslinie, Marker
+  und Wert(e) mit Zeit-Offset in der Textzone („↓ 2,1 M/s ↑ 300 K/s · −45 s").
+- Netz-Sparkline: Upload-Serie zeichnet nur noch bei Traffic (keine
+  überlagerte „fette" Grundlinie im Leerlauf); Watt-Messlücken halten den
+  letzten gültigen Wert statt auf 0 zu fallen.
+- Beim Popup-Öffnen verschluckte Live-Refreshes werden sofort nachgeholt
+  (Momentanwerte ohne Intervall-Verzögerung).
 - Sparklines vereinheitlicht: runde Linien-Ecken/-Enden statt Miter-Spitzen,
   Zeichenbereich um die halbe Strichbreite eingerückt (keine an der
   Canvas-Kante abgeschnittene „dicke Grundlinie" mehr), Fläche endet an der
