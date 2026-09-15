@@ -1643,6 +1643,33 @@ impl<Message> widget::canvas::Program<Message, cosmic::Theme> for Sparkline {
         // eine flache Linie auf der Grundkante wäre nur Rauschen.
         let has_data = self.fixed_max.is_some() || raw_max > 0.0;
 
+        // Explizite Null-Linie an der Unterkante — dieselbe dezente Punkt-Optik
+        // wie die Max-Referenzlinie oben (Koordinaten-Paar: unten 0, oben ≤ max).
+        // Erst sichtbar, wenn sich tatsächlich Werte von ihr abheben; der
+        // 2,5-px-Mindestabstand in `y_of` hält die Kurve von ihr getrennt.
+        let any_positive = self.series.iter().flatten().any(|&v| v > 0.0);
+        let has_samples = self.series.first().is_some_and(|s| s.len() >= 2);
+        if any_positive && has_samples {
+            const DASH: [f32; 2] = [1.0, 3.0];
+            let y = h - SPARK_HW;
+            let mut rule_color: cosmic::iced::Color =
+                theme.cosmic().background.component.on.into();
+            rule_color.a = 0.25;
+            frame.stroke(
+                &Path::line(
+                    cosmic::iced::Point::new(0.0, y),
+                    cosmic::iced::Point::new(w, y),
+                ),
+                widget::canvas::Stroke {
+                    line_dash: widget::canvas::LineDash {
+                        segments: &DASH,
+                        offset: 0,
+                    },
+                    ..spark_stroke(rule_color).with_width(1.0)
+                },
+            );
+        }
+
         for (si, data) in self.series.iter().enumerate() {
             if data.len() < 2 || !has_data || data.iter().all(|&v| v <= 0.0) {
                 continue;
