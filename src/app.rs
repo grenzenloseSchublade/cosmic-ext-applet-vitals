@@ -31,8 +31,11 @@ const CHIP_SYMBOLIC: &[u8] = include_bytes!("../resources/icon-symbolic.svg");
 const LABEL_WIDTH: f32 = 60.0;
 /// Samples je Verlaufs-Graph (bei 1,5-s-Intervall ≈ 3 Minuten Historie).
 const HISTORY_LEN: usize = 120;
-/// Höhe der Sparklines.
-const SPARK_HEIGHT: f32 = 24.0;
+/// Höhe der Sparklines (Textzone + Kurvenbereich).
+const SPARK_HEIGHT: f32 = 34.0;
+/// Oberer Bereich der Sparkline, reserviert für die Beschriftung — die Kurve
+/// zeichnet nur darunter, kann den Text also nie überdecken.
+const SPARK_TEXT_ZONE: f32 = 11.0;
 /// Höhe/Dicke der Auslastungsbalken.
 const BAR_GIRTH: f32 = 8.0;
 /// Panel-Icon-Vergrößerung gegenüber der vom Panel vorgeschlagenen Größe (innerhalb der Zelltiefe).
@@ -1556,9 +1559,12 @@ impl<Message> widget::canvas::Program<Message, cosmic::Theme> for Sparkline {
             let x_of = |i: usize| {
                 w * ((i + HISTORY_LEN - data.len()) as f32) / (n - 1.0)
             };
-            // Zeichenbereich [SPARK_HW, h-SPARK_HW]: die halbe Strichbreite als
-            // Rand, damit die Linie oben/unten nie angeschnitten wird.
-            let y_of = |v: f32| h - (v / max).clamp(0.0, 1.0) * (h - 2.0 * SPARK_HW) - SPARK_HW;
+            // Zeichenbereich [Textzone + halbe Strichbreite, h - halbe
+            // Strichbreite]: oben bleibt die Beschriftung frei, unten wird die
+            // Linie nie an der Canvas-Kante angeschnitten.
+            let top = SPARK_TEXT_ZONE + SPARK_HW;
+            let y_of =
+                |v: f32| h - (v / max).clamp(0.0, 1.0) * (h - top - SPARK_HW) - SPARK_HW;
 
             let line = Path::new(|b| {
                 b.move_to(cosmic::iced::Point::new(x_of(0), y_of(data[0])));
@@ -1591,6 +1597,35 @@ impl<Message> widget::canvas::Program<Message, cosmic::Theme> for Sparkline {
             }
         }
 
+        let mut text_color: cosmic::iced::Color =
+            theme.cosmic().background.component.on.into();
+        text_color.a = 0.35;
+
+        // Hauchfeine gepunktete Referenzlinie auf Kurven-Oberkante (= Skalen-
+        // Maximum) direkt unter dem Text — macht die Koordinaten-Lesart
+        // „Beschriftung gehört zur Oberkante" explizit. Nur bei autoskalierten
+        // Graphen; bei fester 100-%-Skala wäre sie Rauschen.
+        if self.caption_max.is_some() && has_data {
+            const DASH: [f32; 2] = [1.0, 3.0];
+            let y = SPARK_TEXT_ZONE + SPARK_HW;
+            let rule = Path::line(
+                cosmic::iced::Point::new(0.0, y),
+                cosmic::iced::Point::new(w, y),
+            );
+            let mut rule_color = text_color;
+            rule_color.a = 0.25;
+            frame.stroke(
+                &rule,
+                widget::canvas::Stroke {
+                    line_dash: widget::canvas::LineDash {
+                        segments: &DASH,
+                        offset: 0,
+                    },
+                    ..spark_stroke(rule_color).with_width(1.0)
+                },
+            );
+        }
+
         // Minimal-Beschriftung oben rechts: Skalen-Max (nur autoskaliert)
         // + Zeitfenster, winzig und stark gedimmt — informativ, nicht dominant.
         let caption = match (&self.caption_max, has_data) {
@@ -1598,9 +1633,6 @@ impl<Message> widget::canvas::Program<Message, cosmic::Theme> for Sparkline {
             _ => self.span_label.clone(),
         };
         if !caption.is_empty() {
-            let mut text_color: cosmic::iced::Color =
-                theme.cosmic().background.component.on.into();
-            text_color.a = 0.35;
             frame.fill_text(widget::canvas::Text {
                 content: caption,
                 position: cosmic::iced::Point::new(w - 2.0, 0.0),
