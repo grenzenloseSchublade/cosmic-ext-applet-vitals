@@ -22,8 +22,19 @@ pub struct Config {
     pub power_breakdown: bool,
     /// Akku-Zeile (Spannung, Ladezustand) im Popup zeigen.
     pub show_battery: bool,
+    /// Disk-I/O-Rate (Lesen/Schreiben) im Popup zeigen.
+    pub show_disk: bool,
+    /// Swap-Zeile im Popup zeigen (erscheint nur, wenn Swap eingerichtet ist).
+    pub show_swap: bool,
+    /// Load Average (1/5/15 min) im Popup zeigen.
+    pub show_load: bool,
+    /// Uptime-Zeile im Popup zeigen.
+    pub show_uptime: bool,
+    /// Kumulierter Netz-Verbrauch (RX/TX seit Boot) im Popup zeigen.
+    pub show_net_total: bool,
     /// Reihenfolge der Metriken im Popup als IDs (siehe `MetricKind` in app.rs).
-    /// 0=CPU, 1=RAM, 2=Netz, 3=GPU, 4=Lüfter, 5=Kerne, 6=Watt, 7=Akku.
+    /// 0=CPU, 1=RAM, 2=Netz, 3=GPU, 4=Lüfter, 5=Kerne, 6=Watt, 7=Akku,
+    /// 8=Disk, 9=Swap, 10=Load, 11=Uptime, 12=NetzΣ.
     pub metric_order: Vec<u8>,
     /// Temperatur in °F statt °C.
     pub fahrenheit: bool,
@@ -62,7 +73,12 @@ impl Default for Config {
             show_power: true,
             power_breakdown: true,
             show_battery: false,
-            metric_order: vec![0, 1, 2, 3, 4, 5, 6, 7],
+            show_disk: true,
+            show_swap: true,
+            show_load: true,
+            show_uptime: true,
+            show_net_total: true,
+            metric_order: vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
             fahrenheit: false,
             net_unit: 0,
             mono_font: true,

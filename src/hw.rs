@@ -87,4 +87,10 @@ pub const VPN_IFACE_PREFIXES: &[&str] = &["tun", "tap", "wg", "ppp"];
 pub const PROC_STAT: &str = "/proc/stat";
 pub const PROC_MEMINFO: &str = "/proc/meminfo";
 pub const PROC_NET_ROUTE: &str = "/proc/net/route";
+pub const PROC_LOADAVG: &str = "/proc/loadavg";
+pub const PROC_UPTIME: &str = "/proc/uptime";
+pub const PROC_DISKSTATS: &str = "/proc/diskstats";
+/// /proc/diskstats zählt in 512-Byte-Sektoren, unabhängig von der physischen
+/// Sektorgröße des Geräts.
+pub const DISK_SECTOR_BYTES: u64 = 512;
 pub const SYS_CLASS_HWMON: &str = "/sys/class/hwmon";

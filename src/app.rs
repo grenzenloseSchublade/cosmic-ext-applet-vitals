@@ -49,12 +49,17 @@ pub enum MetricKind {
     Cores,
     Power,
     Battery,
+    Disk,
+    Swap,
+    Load,
+    Uptime,
+    NetTotal,
 }
 
 impl MetricKind {
     /// Kanonische Reihenfolge — **Single Source of Truth** für die `u8`-IDs (Index = ID).
     /// Neue Metriken NUR hinten anhängen, sonst verschieben sich gespeicherte IDs.
-    const ALL: [MetricKind; 8] = [
+    const ALL: [MetricKind; 13] = [
         Self::Cpu,
         Self::Mem,
         Self::Net,
@@ -63,6 +68,11 @@ impl MetricKind {
         Self::Cores,
         Self::Power,
         Self::Battery,
+        Self::Disk,
+        Self::Swap,
+        Self::Load,
+        Self::Uptime,
+        Self::NetTotal,
     ];
     /// Im Panel-Text anzeigbare Metriken (kompakter Einzelwert), zykliert durch `CyclePanelMetric`.
     const PANEL: [MetricKind; 5] = [Self::Cpu, Self::Mem, Self::Net, Self::Gpu, Self::Power];
@@ -82,6 +92,11 @@ impl MetricKind {
             Self::Cores => 5,
             Self::Power => 6,
             Self::Battery => 7,
+            Self::Disk => 8,
+            Self::Swap => 9,
+            Self::Load => 10,
+            Self::Uptime => 11,
+            Self::NetTotal => 12,
         }
     }
 
@@ -95,6 +110,11 @@ impl MetricKind {
             Self::Cores => "Kerne",
             Self::Power => "Watt",
             Self::Battery => "Akku",
+            Self::Disk => "Disk",
+            Self::Swap => "Swap",
+            Self::Load => "Load",
+            Self::Uptime => "Uptime",
+            Self::NetTotal => "Netz Σ",
         }
     }
 
@@ -109,6 +129,11 @@ impl MetricKind {
             Self::Cores => "Auslastung jedes einzelnen CPU-Kerns als eigene Zeile.",
             Self::Power => "Leistungsaufnahme: System (RAPL psys), CPU-Package und GPU.",
             Self::Battery => "Ladezustand, Spannung sowie Lade-/Entladeleistung des Akkus.",
+            Self::Disk => "Lese-/Schreibrate aller physischen Laufwerke zusammen.",
+            Self::Swap => "Belegter Auslagerungsspeicher; ausgeblendet, wenn kein Swap eingerichtet ist.",
+            Self::Load => "Load Average über 1, 5 und 15 Minuten.",
+            Self::Uptime => "Zeit seit dem letzten Systemstart.",
+            Self::NetTotal => "Kumulierter Netz-Verbrauch (empfangen/gesendet) seit dem Systemstart.",
         }
     }
 
@@ -123,6 +148,11 @@ impl MetricKind {
             Self::Cores => c.per_core,
             Self::Power => c.show_power,
             Self::Battery => c.show_battery,
+            Self::Disk => c.show_disk,
+            Self::Swap => c.show_swap,
+            Self::Load => c.show_load,
+            Self::Uptime => c.show_uptime,
+            Self::NetTotal => c.show_net_total,
         }
     }
 }
@@ -361,6 +391,11 @@ impl cosmic::Application for AppModel {
                     MetricKind::Cores => c.set_per_core(h, b),
                     MetricKind::Power => c.set_show_power(h, b),
                     MetricKind::Battery => c.set_show_battery(h, b),
+                    MetricKind::Disk => c.set_show_disk(h, b),
+                    MetricKind::Swap => c.set_show_swap(h, b),
+                    MetricKind::Load => c.set_show_load(h, b),
+                    MetricKind::Uptime => c.set_show_uptime(h, b),
+                    MetricKind::NetTotal => c.set_show_net_total(h, b),
                 });
             }
             Message::MoveUp(i) => {
@@ -752,6 +787,79 @@ impl AppModel {
                 }
                 vec![labeled_row("Akku", parts.join(" · "), c.mono_font, c.accent_labels, self.popup)]
             }
+            MetricKind::Disk => {
+                // Gleiche Pfeil-Konvention wie Netz: ↓ Lesen, ↑ Schreiben.
+                vec![labeled_row(
+                    "Disk",
+                    format!(
+                        "↓ {:>8} ↑ {:>8}",
+                        fmt_rate(m.disk_read_bps, c),
+                        fmt_rate(m.disk_write_bps, c)
+                    ),
+                    c.mono_font,
+                    c.accent_labels,
+                    self.popup,
+                )]
+            }
+            MetricKind::Swap => {
+                // Kein Swap eingerichtet → Zeile weglassen.
+                if m.swap_total_kb == 0 {
+                    return Vec::new();
+                }
+                let pct = m.swap_used_kb as f32 / m.swap_total_kb as f32 * 100.0;
+                vec![labeled_row(
+                    "Swap",
+                    format!(
+                        "{:.0} %  {:.1}/{:.1} GiB",
+                        pct,
+                        m.swap_used_kb as f32 / (1024.0 * 1024.0),
+                        m.swap_total_kb as f32 / (1024.0 * 1024.0)
+                    ),
+                    c.mono_font,
+                    c.accent_labels,
+                    self.popup,
+                )]
+            }
+            MetricKind::Load => {
+                let Some((l1, l5, l15)) = m.loadavg else {
+                    return Vec::new();
+                };
+                vec![labeled_row(
+                    "Load",
+                    format!("{l1:.2}  {l5:.2}  {l15:.2}"),
+                    c.mono_font,
+                    c.accent_labels,
+                    self.popup,
+                )]
+            }
+            MetricKind::Uptime => {
+                let Some(s) = m.uptime_s else {
+                    return Vec::new();
+                };
+                vec![labeled_row(
+                    "Uptime",
+                    fmt_uptime(s),
+                    c.mono_font,
+                    c.accent_labels,
+                    self.popup,
+                )]
+            }
+            MetricKind::NetTotal => {
+                if m.net_iface.is_none() {
+                    return Vec::new();
+                }
+                vec![labeled_row(
+                    "Netz Σ",
+                    format!(
+                        "↓ {:>9} ↑ {:>9}",
+                        fmt_bytes(m.net_total_rx),
+                        fmt_bytes(m.net_total_tx)
+                    ),
+                    c.mono_font,
+                    c.accent_labels,
+                    self.popup,
+                )]
+            }
         }
     }
 
@@ -936,6 +1044,11 @@ fn metric_value_info(label: &'static str) -> Option<&'static str> {
         "Kerne %" => "Auslastung je CPU-Kern in Prozent, in Reihen zu je 6 Kernen.",
         "Watt" => "Gesamtleistung des Systems (RAPL psys; „– · Netz“ = am Netz nur mit Akku-Messung nicht bestimmbar) · optional CPU-Package · GPU; beim Laden zusätzlich „Netzteil ≈“ (psys + Ladeleistung).",
         "Akku" => "Spannung · Ladezustand (lädt/entlädt/voll) · aktuelle Lade- bzw. Entladeleistung in W.",
+        "Disk" => "↓ Lese- und ↑ Schreibrate, summiert über alle physischen Laufwerke (ohne Partitionen doppelt zu zählen); Quelle: /proc/diskstats.",
+        "Swap" => "Belegter Auslagerungsspeicher in Prozent und GiB (belegt/gesamt).",
+        "Load" => "Load Average über 1, 5 und 15 Minuten — durchschnittliche Zahl lauffähiger Prozesse; Werte über der Kernzahl bedeuten Wartezeiten.",
+        "Uptime" => "Zeit seit dem letzten Systemstart.",
+        "Netz Σ" => "Kumulierter Verbrauch der aktiven Schnittstelle seit Systemstart: ↓ empfangen, ↑ gesendet.",
         _ => return None,
     })
 }
@@ -1223,6 +1336,34 @@ fn mem_pct(m: &Metrics) -> f32 {
         0.0
     } else {
         m.mem_used_kb as f32 / m.mem_total_kb as f32 * 100.0
+    }
+}
+
+/// Uptime menschenlesbar: „3 d 4 h 12 min" (führende Null-Einheiten entfallen).
+fn fmt_uptime(s: u64) -> String {
+    let d = s / 86_400;
+    let h = (s % 86_400) / 3_600;
+    let min = (s % 3_600) / 60;
+    if d > 0 {
+        format!("{d} d {h} h {min} min")
+    } else if h > 0 {
+        format!("{h} h {min} min")
+    } else {
+        format!("{min} min")
+    }
+}
+
+/// Byte-Summe menschenlesbar in SI-Stufen (kB/MB/GB/TB), eine Nachkommastelle.
+fn fmt_bytes(b: u64) -> String {
+    let b = b as f64;
+    if b >= 1e12 {
+        format!("{:.2} TB", b / 1e12)
+    } else if b >= 1e9 {
+        format!("{:.1} GB", b / 1e9)
+    } else if b >= 1e6 {
+        format!("{:.1} MB", b / 1e6)
+    } else {
+        format!("{:.0} kB", b / 1e3)
     }
 }
 

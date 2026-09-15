@@ -2,6 +2,13 @@
 
 ## Unveröffentlicht
 
+- **Fünf neue Metriken** (alle einzeln abschaltbar, in „Metriken & Reihenfolge"
+  sortierbar): **Disk** (Lese-/Schreibrate über physische Laufwerke,
+  /proc/diskstats), **Swap** (nur sichtbar wenn eingerichtet), **Load**
+  (1/5/15 min), **Uptime** sowie **Netz Σ** (kumulierter RX/TX-Verbrauch seit
+  Boot — aus den ohnehin gelesenen Zählern). Load/Uptime werden nur bei
+  offenem Popup gelesen; Disk läuft als Delta-Metrik immer mit.
+
 - **Neue Metrik „Watt":** Leistungsaufnahme System gesamt (RAPL `psys`,
   Fallback Akku-Entladeleistung), CPU-Paket (RAPL `package-0`) und GPU
   (NVML `power_usage()`, weiterhin nur bei wacher dGPU — kein Wecken).

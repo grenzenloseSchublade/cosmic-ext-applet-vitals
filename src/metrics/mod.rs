@@ -33,6 +33,20 @@ pub struct Metrics {
     pub net_iface: Option<String>,
     /// Typ der aktiven Schnittstelle (WLAN/LAN/VPN) — lesbarer als der rohe Iface-Name.
     pub net_kind: Option<&'static str>,
+    /// Kumulierte RX/TX-Bytes der aktiven Schnittstelle seit Boot (aus den
+    /// ohnehin gelesenen Zählern — kein zusätzlicher Read).
+    pub net_total_rx: u64,
+    pub net_total_tx: u64,
+    /// Swap belegt/gesamt in kB (0/0 = kein Swap eingerichtet).
+    pub swap_used_kb: u64,
+    pub swap_total_kb: u64,
+    /// Load Average 1/5/15 min (nur bei offenem Popup gelesen).
+    pub loadavg: Option<(f32, f32, f32)>,
+    /// Uptime in Sekunden (nur bei offenem Popup gelesen).
+    pub uptime_s: Option<u64>,
+    /// Disk-Lese-/Schreibrate in Bytes/s, summiert über physische Laufwerke.
+    pub disk_read_bps: f64,
+    pub disk_write_bps: f64,
     pub gpu: gpu::GpuInfo,
     pub power: power::PowerInfo,
 }
@@ -60,6 +74,8 @@ pub struct Collector {
     prev_cpu: Option<CpuTimes>,
     prev_core: Vec<CpuTimes>,
     prev_net: Option<(u64, u64, Instant)>,
+    /// Voriges Disk-Sample (Sektoren gelesen/geschrieben) für die Delta-Rate.
+    prev_disk: Option<(u64, u64, Instant)>,
     iface: Option<String>,
     sensors: SensorPaths,
     /// `live` des vorherigen Ticks — für den Sensor-Retry bei Popup-Öffnung.
@@ -76,6 +92,7 @@ impl Collector {
             prev_cpu: None,
             prev_core: Vec::new(),
             prev_net: None,
+            prev_disk: None,
             iface: None,
             sensors: SensorPaths {
                 cpu_temp_input: None,
@@ -115,10 +132,12 @@ impl Collector {
             self.prev_core = cores;
         }
 
-        // --- RAM ---
-        if let Some((total, avail)) = read_meminfo() {
-            m.mem_total_kb = total;
-            m.mem_used_kb = total.saturating_sub(avail);
+        // --- RAM / Swap ---
+        if let Some(mi) = read_meminfo() {
+            m.mem_total_kb = mi.total;
+            m.mem_used_kb = mi.total.saturating_sub(mi.avail);
+            m.swap_total_kb = mi.swap_total;
+            m.swap_used_kb = mi.swap_total.saturating_sub(mi.swap_free);
         }
 
         // --- Temperaturen / Lüfter (nur im Popup sichtbar) ---
@@ -133,8 +152,26 @@ impl Collector {
             m.cpu_temp_c = self.sensors.cpu_temp();
             m.ram_temp_c = self.sensors.ram_temp();
             m.fans_rpm = self.sensors.fans();
+            // Momentanwerte ohne Delta-Zustand — nur fürs Popup nötig.
+            m.loadavg = read_loadavg();
+            m.uptime_s = read_uptime_s();
         }
         self.was_live = live;
+
+        // --- Disk-I/O (Delta wie Netz: läuft immer, sonst Sprung beim Öffnen) ---
+        if let Some((rd, wr)) = read_disk_sectors() {
+            let now = Instant::now();
+            if let Some((prd, pwr, pt)) = self.prev_disk {
+                let dt = now.duration_since(pt).as_secs_f64();
+                if dt > 0.0 {
+                    m.disk_read_bps =
+                        rd.saturating_sub(prd) as f64 * hw::DISK_SECTOR_BYTES as f64 / dt;
+                    m.disk_write_bps =
+                        wr.saturating_sub(pwr) as f64 * hw::DISK_SECTOR_BYTES as f64 / dt;
+                }
+            }
+            self.prev_disk = Some((rd, wr, now));
+        }
 
         // --- Netz ---
         // Default-Interface bei jedem Tick neu bestimmen (WLAN↔LAN↔VPN-Wechsel);
@@ -149,6 +186,9 @@ impl Collector {
         m.net_kind = self.iface.as_deref().map(iface_kind);
         if let Some(iface) = &self.iface {
             if let Some((rx, tx)) = read_net_bytes(iface) {
+                // Kumulierte Totals seit Boot — dieselben Zähler wie für die Rate.
+                m.net_total_rx = rx;
+                m.net_total_tx = tx;
                 let now = Instant::now();
                 if let Some((prx, ptx, pt)) = self.prev_net {
                     let dt = now.duration_since(pt).as_secs_f64();
@@ -233,18 +273,93 @@ fn read_cpu_times() -> Option<(CpuTimes, Vec<CpuTimes>)> {
     Some((agg?, cores))
 }
 
-fn read_meminfo() -> Option<(u64, u64)> {
+/// RAM- und Swap-Zahlen aus /proc/meminfo (alle in kB).
+struct MemInfo {
+    total: u64,
+    avail: u64,
+    swap_total: u64,
+    swap_free: u64,
+}
+
+fn read_meminfo() -> Option<MemInfo> {
     let data = fs::read_to_string(hw::PROC_MEMINFO).ok()?;
     let mut total = None;
     let mut avail = None;
+    let mut swap_total = 0;
+    let mut swap_free = 0;
+    let kb = |v: &str| v.split_whitespace().next().and_then(|x| x.parse().ok());
     for line in data.lines() {
         if let Some(v) = line.strip_prefix("MemTotal:") {
-            total = v.split_whitespace().next().and_then(|x| x.parse().ok());
+            total = kb(v);
         } else if let Some(v) = line.strip_prefix("MemAvailable:") {
-            avail = v.split_whitespace().next().and_then(|x| x.parse().ok());
+            avail = kb(v);
+        } else if let Some(v) = line.strip_prefix("SwapTotal:") {
+            swap_total = kb(v).unwrap_or(0);
+        } else if let Some(v) = line.strip_prefix("SwapFree:") {
+            swap_free = kb(v).unwrap_or(0);
         }
     }
-    Some((total?, avail?))
+    Some(MemInfo {
+        total: total?,
+        avail: avail?,
+        swap_total,
+        swap_free,
+    })
+}
+
+/// Load Average 1/5/15 min aus /proc/loadavg.
+fn read_loadavg() -> Option<(f32, f32, f32)> {
+    let data = fs::read_to_string(hw::PROC_LOADAVG).ok()?;
+    let mut it = data.split_whitespace();
+    Some((
+        it.next()?.parse().ok()?,
+        it.next()?.parse().ok()?,
+        it.next()?.parse().ok()?,
+    ))
+}
+
+/// Uptime in ganzen Sekunden aus /proc/uptime.
+fn read_uptime_s() -> Option<u64> {
+    let data = fs::read_to_string(hw::PROC_UPTIME).ok()?;
+    data.split_whitespace()
+        .next()?
+        .parse::<f64>()
+        .ok()
+        .map(|s| s as u64)
+}
+
+/// Summe (Sektoren gelesen, Sektoren geschrieben) über physische Laufwerke aus
+/// /proc/diskstats. Partitionen werden übersprungen, sonst zählt alles doppelt.
+fn read_disk_sectors() -> Option<(u64, u64)> {
+    let data = fs::read_to_string(hw::PROC_DISKSTATS).ok()?;
+    let mut rd = 0u64;
+    let mut wr = 0u64;
+    for line in data.lines() {
+        let mut f = line.split_whitespace();
+        // Felder: major minor name reads reads_merged sectors_read ms_read
+        //         writes writes_merged sectors_written …
+        let name = f.nth(2)?;
+        if is_partition(name) || name.starts_with("loop") || name.starts_with("ram") {
+            continue;
+        }
+        let sectors_read: u64 = f.nth(2).and_then(|x| x.parse().ok())?;
+        let sectors_written: u64 = f.nth(3).and_then(|x| x.parse().ok())?;
+        rd += sectors_read;
+        wr += sectors_written;
+    }
+    Some((rd, wr))
+}
+
+/// Partition erkennen: `sda1`, `nvme0n1p2`, `mmcblk0p1` — ganze Laufwerke
+/// (`sda`, `nvme0n1`, `mmcblk0`) zählen, ihre Partitionen nicht.
+fn is_partition(name: &str) -> bool {
+    if name.starts_with("nvme") || name.starts_with("mmcblk") {
+        // nvme0n1p2 / mmcblk0p1 → enthält 'p' nach dem Grundnamen.
+        name.contains('p') && name.rsplit('p').next().is_some_and(|s| s.chars().all(|c| c.is_ascii_digit()) && !s.is_empty())
+    } else {
+        // sda1, vdb2, … → endet auf Ziffer.
+        name.ends_with(|c: char| c.is_ascii_digit())
+    }
 }
 
 /// Interface der Default-Route aus /proc/net/route (Destination == 00000000).
