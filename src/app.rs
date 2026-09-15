@@ -1212,20 +1212,51 @@ impl AppModel {
 /// bedeutet (Spalten, Zustände, Quellen). Schlüssel ist das angezeigte Label —
 /// die Labels sind kanonisch (`MetricKind::label()` bzw. „Kerne %").
 fn metric_value_info(label: &'static str) -> Option<&'static str> {
+    // Muster: Kopfzeile (was die Zeile zeigt), darunter „•"-Punkte je
+    // Spalte/Zustand — statt Semikolon-Fließtext.
     Some(match label {
-        "CPU" => "Gesamtauslastung über alle Kerne; rechts die CPU-Paket-Temperatur (hwmon).",
-        "RAM" => "Auslastung in Prozent; Mitte belegt/gesamt in GiB; rechts die RAM-Temperatur (falls Sensor vorhanden).",
-        "Netz" => "↓ Empfangs- und ↑ Senderate der aktiven Schnittstelle; dahinter der Typ (WLAN/LAN/VPN).",
-        "GPU" => "Zustände: „schläft“ = dGPU im Stromsparmodus (wird nie geweckt); „keine NVIDIA“ = keine dGPU gefunden; „aktiv · Modus“ = wach, aber ohne Live-Werte; sonst Auslastung % · VRAM belegt/gesamt · Temperatur (via NVML).",
-        "Lüfter" => "Drehzahlen aller erkannten Lüfter in Umdrehungen pro Minute (hwmon).",
-        "Kerne %" => "Auslastung je CPU-Kern in Prozent, in Reihen zu je 6 Kernen.",
-        "Watt" => "Gesamtleistung des Systems (RAPL psys; „– · Netz“ = am Netz nur mit Akku-Messung nicht bestimmbar) · optional CPU-Package · GPU; beim Laden zusätzlich „Netzteil ≈“ (psys + Ladeleistung).",
-        "Akku" => "Spannung · Ladezustand (lädt/entlädt/voll) · aktuelle Lade- bzw. Entladeleistung in W.",
-        "Disk" => "↓ Lese- und ↑ Schreibrate, summiert über alle physischen Laufwerke (ohne Partitionen doppelt zu zählen); Quelle: /proc/diskstats.",
-        "Swap" => "Belegter Auslagerungsspeicher in Prozent und GiB (belegt/gesamt).",
-        "Load" => "Load Average über 1, 5 und 15 Minuten — durchschnittliche Zahl lauffähiger Prozesse; Werte über der Kernzahl bedeuten Wartezeiten.",
+        "CPU" => "Gesamtauslastung aller Kerne.\n\
+            • links % · rechts Paket-Temperatur (hwmon)\n\
+            • Verlauf: Hovern zeigt Wert und Zeitpunkt",
+        "RAM" => "Arbeitsspeicher-Belegung.\n\
+            • links % · Mitte belegt/gesamt GiB\n\
+            • rechts RAM-Temperatur (falls Sensor vorhanden)\n\
+            • Verlauf: Hovern zeigt Wert und Zeitpunkt",
+        "Netz" => "Datenrate der aktiven Schnittstelle.\n\
+            • ↓ empfangen · ↑ senden · Typ (WLAN/LAN/VPN)\n\
+            • Einheit unter „Netz-Einheit“ wählbar\n\
+            • Verlauf: Skala 0…≤ Fenster-Maximum, ↑ gedimmt;\n\
+            \u{2007}\u{2007}Hovern zeigt Werte und Zeitpunkt",
+        "GPU" => "Dedizierte NVIDIA-GPU (NVML).\n\
+            • „schläft“ — Stromsparmodus, wird nie geweckt\n\
+            • „keine NVIDIA“ — keine dGPU gefunden\n\
+            • „aktiv · Modus“ — wach, ohne Live-Werte\n\
+            • sonst: Auslastung % · VRAM · Temperatur",
+        "Lüfter" => "Drehzahlen aller erkannten Lüfter (hwmon), in U/min.",
+        "Kerne %" => "Auslastung je CPU-Kern in Prozent, Reihen zu je 6 Kernen.",
+        "Watt" => "Leistungsaufnahme des Systems.\n\
+            • Gesamt: RAPL psys — „– · Netz“ heißt: am Netz\n\
+            \u{2007}\u{2007}nicht messbar (nur Akku-Messung verfügbar)\n\
+            • CPU-Package · GPU (Schalter „Watt aufschlüsseln“)\n\
+            • beim Laden: „Netzteil ≈“ psys + Ladeleistung\n\
+            • Verlauf: Skala 0…≤ Fenster-Maximum;\n\
+            \u{2007}\u{2007}Hovern zeigt Wert und Zeitpunkt",
+        "Akku" => "Akku-Zustand.\n\
+            • Spannung (V) · Status (lädt/entlädt/voll)\n\
+            • Lade-/Entladeleistung in W, nur wenn Strom fließt",
+        "Disk" => "Datenrate aller physischen Laufwerke.\n\
+            • ↓ lesen · ↑ schreiben\n\
+            • Partitionen/virtuelle Devices nicht doppelt gezählt\n\
+            • Quelle: /proc/diskstats",
+        "Swap" => "Auslagerungsspeicher: % und belegt/gesamt GiB.\n\
+            • Zeile erscheint nur, wenn Swap eingerichtet ist",
+        "Load" => "Load Average 1 / 5 / 15 min.\n\
+            • Ø lauffähige Prozesse; Werte über der\n\
+            \u{2007}\u{2007}Kernzahl bedeuten Wartezeiten",
         "Uptime" => "Zeit seit dem letzten Systemstart.",
-        "Netz Σ" => "Kumulierter Verbrauch der aktiven Schnittstelle seit Systemstart: ↓ empfangen, ↑ gesendet. Bei Wechsel der Schnittstelle (WLAN↔LAN) zählt die neue ab ihrem eigenen Stand.",
+        "Netz Σ" => "Summe seit Systemstart (aktive Schnittstelle).\n\
+            • ↓ empfangen · ↑ gesendet\n\
+            • bei Wechsel WLAN↔LAN zählt die neue ab ihrem Stand",
         _ => return None,
     })
 }
