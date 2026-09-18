@@ -146,6 +146,8 @@ for p in $(pgrep -f cosmic-ext-applet-vitals); do readlink /proc/$p/exe; done
 
 Note: `pkill -f cosmic-ext-applet-vitals` is a trap in scripts — the pattern also matches the shell that runs the command, killing your own script. Filter by `/proc/<pid>/exe` as above instead.
 
+Also note: after repeated panel restarts, cosmic-session respawns the panel with an increasing back-off delay (sometimes >100 s). Just wait — do **not** start `cosmic-panel` manually in parallel, or you end up with two panels; if that happens, kill the orphaned one (`PPID` 1) and keep the session child.
+
 **C) Build your own `.deb`:**
 
 ```sh
