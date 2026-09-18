@@ -27,7 +27,9 @@ Typical system monitor applets spawn `nvidia-smi` as a subprocess on **every tic
 ## Display
 
 - **Panel:** symbolic chip icon, optionally with a compact value next to it (e.g. `CPU 12%` or `↓1.2M/s ↑0.1M/s`, horizontal panel only). The applet area **grows dynamically** with the text (via `core.applet.autosize_window`).
-- **Popup (details):** CPU (total + temp, optional per core), RAM (used/total + temp), network (↓/↑ + type **WLAN/LAN/VPN**), GPU (when the dGPU is active: usage + VRAM + temp; otherwise state/mode), fan speeds, **power draw** (system total / CPU package / GPU, in watts — see *Power measurement (RAPL)* below) and optionally a **battery line** (voltage, charging state, charge/discharge power). Optionally as **usage bars** (two-line, full width) for CPU/RAM/GPU.
+- **Popup (details):** CPU (total + temp, optional per core), RAM (used/total + temp), network (↓/↑ + type **WLAN/LAN/VPN**), GPU (when the dGPU is active: usage + VRAM + temp; otherwise state/mode), fan speeds, **power draw** (system total / CPU package / GPU, in watts — see *Power measurement (RAPL)* below) and optionally a **battery line** (voltage, charging state, charge/discharge power). Additional opt-in metrics (off by default): **disk I/O** (read/write rate over physical drives), **swap**, **load average** (1/5/15 min), **uptime** and **cumulative network total** since boot. Optionally as **usage bars** (two-line, full width) for CPU/RAM/GPU.
+- **History graphs (sparklines):** a ~3-minute mini-graph under CPU, RAM, network (↓ solid, ↑ dimmed) and watts, drawn in the system accent color; history keeps collecting while the popup is closed. Hovering shows the value and time offset at the cursor; autoscaled graphs carry a dotted max reference line and a `≤ max · span` caption. Master toggle plus per-metric toggles.
+- **Info tooltips everywhere:** every settings label has an ⓘ icon with an explanation; the bold metric words in the main view show a structured explanation box on hover (a real Wayland popup that may extend beyond the window edge, so it never covers the values).
 
 ## Data sources
 
@@ -45,6 +47,11 @@ Typical system monitor applets spawn `nvidia-smi` as a subprocess on **every tic
 | GPU usage/temp/VRAM/power | NVML (`libnvidia-ml`, `memory_info()`, `power_usage()`) — only when the dGPU is active |
 | System / CPU package power | RAPL `/sys/class/powercap` (`psys` / `package-0`, counter delta) — needs the opt-in udev rule, see below |
 | Battery voltage/power/state | `/sys/class/power_supply/BAT*/{voltage_now,power_now,status}` |
+| Disk I/O | `/proc/diskstats` (512-byte sectors, delta; partitions and stacked devices like `dm-`/`md`/`zram` excluded to avoid double counting) |
+| Swap | `/proc/meminfo` (`SwapTotal`/`SwapFree`) |
+| Load average | `/proc/loadavg` |
+| Uptime | `/proc/uptime` |
+| Net total (Σ) | cumulative `rx_bytes`/`tx_bytes` — same counters as the rate |
 
 ## Adapting to other hardware
 
@@ -167,10 +174,14 @@ The same applet can be placed in the panel **and/or** the dock. A click opens th
 In the detail popup, click the **gear** in the top right → settings view (back via the **arrow**):
 
 - **Metrics & order:** a toggle per metric (on/off) plus **▲/▼** to reorder. The order applies immediately to the value list and is persisted (`metric_order`).
-- **Display:** CPU temperature, °C/°F, monospace font, "hide GPU while asleep", **net unit** (click cycles SI → binary → bit).
-- **Presentation:** **bars in the popup** (graphical usage for CPU/RAM/GPU instead of text), **value next to the panel icon** (compact, horizontal panel only), and **panel value** (which metric is shown there: CPU/RAM/Net/GPU/Watts).
+- **Content** (what the popup shows): CPU temperature, "hide GPU while asleep", **watt breakdown** (system/CPU/GPU as separate values).
+- **Format:** °C/°F, **net unit** (click cycles SI → binary → bit), monospace font.
+- **Presentation:** **bars in the popup** (CPU/RAM/GPU), **history graphs (sparklines)** — master toggle plus indented per-metric toggles for CPU/RAM/Net/Watts — and **accent-colored labels**.
+- **Panel:** **value next to the panel icon** (compact, horizontal panel only) with the indented **panel value** picker (CPU/RAM/Net/GPU/Watts).
 - **Refresh:** interval in ms (step 250, min 250).
 - **Reset to defaults:** all options (including the order) back to defaults.
+
+Every label carries an ⓘ info tooltip explaining the option.
 
 Everything applies **live** and is stored in cosmic-config (see below).
 
@@ -186,12 +197,17 @@ Persisted via cosmic-config (live, no restart). Options include:
 | `net_unit` | 0 = MB/s, 1 = MiB/s, 2 = Mbit/s | 0 |
 | `show_fans` | fan line in the popup | on |
 | `show_power` | watts line (system/CPU/GPU) in the popup | on |
+| `power_breakdown` | watt line additionally split into CPU/GPU values | on |
 | `show_battery` | battery line (voltage, state) in the popup | off |
+| `show_disk` / `show_swap` / `show_load` / `show_uptime` / `show_net_total` | the newer opt-in metric lines | off |
 | `mono_font` | monospace font in the value list | on |
 | `hide_gpu_when_asleep` | hide the dGPU entirely while asleep | off |
 | `per_core` | CPU per core in the popup | on |
-| `metric_order` | order of metrics (IDs: 0=CPU, 1=RAM, 2=Net, 3=GPU, 4=Fans, 5=Cores, 6=Watts, 7=Battery) | `[0,1,2,3,4,5,6,7]` |
+| `metric_order` | order of metrics (IDs: 0=CPU, 1=RAM, 2=Net, 3=GPU, 4=Fans, 5=Cores, 6=Watts, 7=Battery, 8=Disk, 9=Swap, 10=Load, 11=Uptime, 12=Net Σ) | `[0…12]` |
 | `graphical` | usage bars in the popup (CPU/RAM/GPU) | off |
+| `show_graphs` | sparklines master toggle | on |
+| `graph_cpu` / `graph_mem` / `graph_net` / `graph_power` | per-metric sparkline toggles | on |
+| `accent_labels` | bold metric labels in the system accent color | on |
 | `panel_text` | compact value next to the panel icon (horizontal panel only) | off |
 | `panel_metric` | which metric in the panel text (0=CPU, 1=RAM, 2=Net, 3=GPU, 6=Watts) | 0 |
 | `warn_temp_c` / `crit_temp_c` | thresholds for colored temperature warnings | 80 / 90 |

@@ -219,9 +219,11 @@ impl PowerReader {
                             _ => BatStatus::Unknown,
                         }
                     }
-                    // Akku weg → Cache verwerfen, nächster Tick scannt neu.
+                    // Akku weg → Pfade verwerfen; der nächste Rescan folgt dem
+                    // normalen Countdown (kein Scan pro Tick, falls der Fehler
+                    // dauerhaft ist — z. B. Rechteproblem).
                     Err(_) => {
-                        self.bats = None;
+                        self.bats = Some(Vec::new());
                         return BatteryReading::default();
                     }
                 }

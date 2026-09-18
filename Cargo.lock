@@ -940,6 +940,7 @@ dependencies = [
  "libcosmic",
  "nvml-wrapper",
  "tokio",
+ "zbus",
 ]
 
 [[package]]

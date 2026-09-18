@@ -9,7 +9,7 @@ use cosmic::cosmic_config::{self, cosmic_config_derive::CosmicConfigEntry, Cosmi
 pub struct Config {
     /// Aktualisierungsintervall in Millisekunden.
     pub interval_ms: u64,
-    /// Welche Werte inline im Panel erscheinen.
+    /// Welche Metrik-Zeilen im Popup erscheinen.
     pub show_cpu: bool,
     pub show_cpu_temp: bool,
     pub show_mem: bool,
@@ -44,7 +44,8 @@ pub struct Config {
     pub mono_font: bool,
     /// dGPU im Schlaf ausblenden statt „schläft" zeigen.
     pub hide_gpu_when_asleep: bool,
-    /// Schwellen für Warn-/Kritisch-Farben im Popup (°C).
+    /// Schwellen für Warn-/Kritisch-Farben im Popup (°C). Bewusst ohne
+    /// UI-Schalter — nur über die cosmic-config-Dateien änderbar.
     pub warn_temp_c: u32,
     pub crit_temp_c: u32,
     /// CPU-Auslastung pro Kern im Popup zeigen.
@@ -63,7 +64,7 @@ pub struct Config {
     pub accent_labels: bool,
     /// Einen kompakten Wert direkt neben dem Panel-Icon anzeigen (nur horizontale Leiste).
     pub panel_text: bool,
-    /// Welche Metrik im Panel-Text steht (0=CPU, 1=RAM, 2=Netz, 3=GPU).
+    /// Welche Metrik im Panel-Text steht (0=CPU, 1=RAM, 2=Netz, 3=GPU, 6=Watt).
     pub panel_metric: u8,
 }
 

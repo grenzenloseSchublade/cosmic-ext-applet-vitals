@@ -7,7 +7,7 @@
 // Sparsamkeit pro Tick: hwmon-/Akku-Pfade werden einmal aufgelöst und gecacht
 // (`SensorPaths`, `PowerReader::bats`); Momentanwerte, die nur im Popup sichtbar
 // sind (Temperaturen, Lüfter, per-Core-Prozente, PRIME-Modus), werden bei
-// geschlossenem Popup gar nicht erst erhoben. Delta-Metriken (CPU, Netz, RAPL)
+// geschlossenem Popup gar nicht erst erhoben. Delta-Metriken (CPU, Netz, Disk, RAPL)
 // laufen immer, sonst gäbe es Sprünge beim Popup-Öffnen.
 
 pub mod gpu;
@@ -107,9 +107,17 @@ impl Collector {
         }
     }
 
+    /// Delta-Zustände verwerfen (Suspend/Resume): RAPL-Zähler sowie Netz-/
+    /// Disk-Samples — deren Deltas haben keine Sanity-Klammer wie RAPL.
+    pub fn reset_deltas(&mut self) {
+        self.power.reset();
+        self.prev_net = None;
+        self.prev_disk = None;
+    }
+
     /// `live`: Popup offen. Gated GPU-Live-Werte (NVML — dGPU bleibt sonst
     /// unangetastet, kein Pin, kein Wecken) und die nur im Popup sichtbaren
-    /// Momentanwerte (Temperaturen, Lüfter). Delta-Metriken (CPU, Netz, RAPL)
+    /// Momentanwerte (Temperaturen, Lüfter). Delta-Metriken (CPU, Netz, Disk, RAPL)
     /// laufen immer, damit beim Öffnen keine Sprünge entstehen.
     pub fn refresh(&mut self, live: bool) -> Metrics {
         let mut m = Metrics::default();
@@ -204,10 +212,7 @@ impl Collector {
         // --- Leistung (RAPL + Akku) ---
         // Nach Suspend Zählerzustand verwerfen, damit kein Delta über die Schlafphase entsteht.
         if self.paused {
-            self.power.reset();
-            // Auch Netz-/Disk-Samples: deren Deltas haben keine Sanity-Klammer wie RAPL.
-            self.prev_net = None;
-            self.prev_disk = None;
+            self.reset_deltas();
         }
         m.power = self.power.read();
 

@@ -2,6 +2,28 @@
 
 ## Unveröffentlicht
 
+- **Suspend-Integration:** logind-Signal `PrepareForSleep` pausiert die
+  Delta-Erfassung; beim Aufwachen werden RAPL-/Netz-/Disk-Zustände sofort
+  verworfen — keine Resume-Spikes. Ohne logind läuft das Applet unverändert.
+- **Sparkline-Performance:** die Kurven-Geometrie liegt in einem
+  `canvas::Cache` und wird nur bei neuen Daten tesselliert — Hover-Frames
+  zeichnen nur noch das leichte Overlay (Führungslinie, Marker, Text).
+- Auslastungs-Warnfarben: der Prozentwert von CPU/RAM/GPU färbt sich an den
+  Schwellen (≥ 75 % orange, ≥ 90 % rot, wie die Temperaturen); die Balken
+  tragen Schwellen-Marker bei 75/90 % (der Theme-Balken selbst ist per
+  libcosmic-API nicht einfärbbar).
+- Popup-Layout: Mittel- und Temperatur-Spalte der Drei-Spalten-Zeilen sind
+  jetzt fest verankert und fluchten zeilenübergreifend; Netz-/Disk-Zeilen
+  kompakter (kein Umbruch bei schmalem Popup); Beschriftungsspalte minimal
+  breiter (Puffer für Textskalierung).
+- Review-Nacharbeiten: Akku-Rescan hält bei Lesefehlern den Backoff ein;
+  `MetricKind`-IDs werden aus der kanonischen Reihenfolge abgeleitet
+  (echte Single Source of Truth); Erklärtexte der Hauptansicht sind
+  enum-typisiert statt über Anzeige-Strings gekoppelt; gemeinsame Helfer
+  für Zyklus-Zeilen und Warnfarben; veraltete Kommentare korrigiert.
+- Doku: README (EN/DE), metainfo und man-Page decken die neuen Metriken,
+  Sparklines und die neue Einstellungs-Gliederung ab.
+
 - **Sparkline-Hover:** Cursor über einem Graphen zeigt Führungslinie, Marker
   und Wert(e) mit Zeit-Offset in der Textzone („↓ 2,1 M/s ↑ 300 K/s · −45 s").
 - Netz-Sparkline: Upload-Serie zeichnet nur noch bei Traffic (keine

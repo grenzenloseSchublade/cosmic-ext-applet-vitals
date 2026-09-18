@@ -27,8 +27,17 @@ static METRIC_TIP_AUTOSIZE: LazyLock<widget::Id> =
 /// wird vom COSMIC-Panel automatisch hell/dunkel eingefärbt.
 const CHIP_SYMBOLIC: &[u8] = include_bytes!("../resources/icon-symbolic.svg");
 
-/// Feste Breite der fetten Metrik-Beschriftung (linke Spalte im Popup).
-const LABEL_WIDTH: f32 = 60.0;
+/// Feste Breite der fetten Metrik-Beschriftung (linke Spalte im Popup);
+/// mit etwas Puffer für erhöhte COSMIC-Textskalierung.
+const LABEL_WIDTH: f32 = 64.0;
+/// Feste Breiten der Mittel-/Temperatur-Spalte in `triple_row` — rechtsbündig
+/// verankert, damit die Werte zeilenübergreifend fluchten (statt der früher
+/// frei flottierenden Fill-Spacer-Mitte).
+const MID_COL_WIDTH: f32 = 110.0;
+const TEMP_COL_WIDTH: f32 = 56.0;
+/// Warn-/Kritisch-Farben (Temperatur-Schwellen, Balken-Auslastung).
+const WARN_COLOR: cosmic::iced::Color = cosmic::iced::Color::from_rgb(0.95, 0.65, 0.15);
+const CRIT_COLOR: cosmic::iced::Color = cosmic::iced::Color::from_rgb(0.90, 0.22, 0.22);
 /// Samples je Verlaufs-Graph (bei 1,5-s-Intervall ≈ 3 Minuten Historie).
 const HISTORY_LEN: usize = 120;
 /// Höhe der Sparklines (Textzone + Kurvenbereich).
@@ -89,23 +98,9 @@ impl MetricKind {
         Self::ALL.get(v as usize).copied()
     }
 
-    /// Die `u8`-ID (= Index in `ALL`).
-    const fn id(self) -> u8 {
-        match self {
-            Self::Cpu => 0,
-            Self::Mem => 1,
-            Self::Net => 2,
-            Self::Gpu => 3,
-            Self::Fans => 4,
-            Self::Cores => 5,
-            Self::Power => 6,
-            Self::Battery => 7,
-            Self::Disk => 8,
-            Self::Swap => 9,
-            Self::Load => 10,
-            Self::Uptime => 11,
-            Self::NetTotal => 12,
-        }
+    /// Die `u8`-ID (= Index in `ALL` — dort liegt die Single Source of Truth).
+    fn id(self) -> u8 {
+        Self::ALL.iter().position(|k| *k == self).unwrap_or(0) as u8
     }
 
     fn label(self) -> &'static str {
@@ -169,6 +164,41 @@ impl MetricKind {
 /// IDs raus, Duplikate raus, fehlende (neu hinzugekommene) IDs hinten anfügen.
 /// Wird nur in-memory angewandt — kein Zurückschreiben, sonst entstünde eine
 /// Schleife mit dem Config-Watcher.
+/// Abonniert das logind-Signal `PrepareForSleep` (System-Bus): pausiert die
+/// Delta-Erfassung über die Schlafphase. Ohne logind (Container, andere Init-
+/// Systeme) endet der Stream still — das Applet läuft ohne Suspend-Reset weiter.
+fn logind_sleep_subscription() -> Subscription<Message> {
+    Subscription::run(|| {
+        cosmic::iced::stream::channel(
+            4,
+            |mut tx: cosmic::iced::futures::channel::mpsc::Sender<Message>| async move {
+            use cosmic::iced::futures::{SinkExt, StreamExt};
+            let Ok(conn) = zbus::Connection::system().await else {
+                return;
+            };
+            let Ok(proxy) = zbus::Proxy::new(
+                &conn,
+                "org.freedesktop.login1",
+                "/org/freedesktop/login1",
+                "org.freedesktop.login1.Manager",
+            )
+            .await
+            else {
+                return;
+            };
+            let Ok(mut signals) = proxy.receive_signal("PrepareForSleep").await else {
+                return;
+            };
+            while let Some(msg) = signals.next().await {
+                if let Ok(sleeping) = msg.body().deserialize::<bool>() {
+                    let _ = tx.send(Message::PrepareForSleep(sleeping)).await;
+                }
+            }
+            },
+        )
+    })
+}
+
 fn normalize_order(order: &[u8]) -> Vec<u8> {
     let mut out: Vec<u8> = Vec::with_capacity(MetricKind::ALL.len());
     for &id in order {
@@ -224,6 +254,25 @@ impl History {
     }
 }
 
+/// Geometrie-Caches der vier Sparklines: die statische Kurven-Geometrie wird
+/// nur bei neuen Daten (Tick) neu tesselliert, nicht bei jedem Hover-Frame.
+#[derive(Default)]
+struct SparkCaches {
+    cpu: widget::canvas::Cache,
+    mem: widget::canvas::Cache,
+    net: widget::canvas::Cache,
+    power: widget::canvas::Cache,
+}
+
+impl SparkCaches {
+    fn clear(&self) {
+        self.cpu.clear();
+        self.mem.clear();
+        self.net.clear();
+        self.power.clear();
+    }
+}
+
 pub struct AppModel {
     core: cosmic::Core,
     popup: Option<Id>,
@@ -243,6 +292,8 @@ pub struct AppModel {
     ui_mode: ViewMode,
     /// Verlaufswerte für die Sparklines.
     history: History,
+    /// Geometrie-Caches der Sparklines (Invalidierung bei neuen Daten).
+    spark_caches: SparkCaches,
 }
 
 #[derive(Debug, Clone)]
@@ -252,6 +303,8 @@ pub enum Message {
     MetricsUpdated(Metrics),
     TogglePopup,
     PopupClosed(Id),
+    /// logind `PrepareForSleep`: true = System schläft gleich, false = Aufwachen.
+    PrepareForSleep(bool),
     UpdateConfig(Config),
     // --- Einstellungen ---
     ToggleSettings,
@@ -368,6 +421,7 @@ impl cosmic::Application for AppModel {
             pending_live: false,
             ui_mode: ViewMode::Metrics,
             history: History::default(),
+            spark_caches: SparkCaches::default(),
         };
         (app, Task::none())
     }
@@ -383,6 +437,7 @@ impl cosmic::Application for AppModel {
             self.core()
                 .watch_config::<Config>(Self::APP_ID)
                 .map(|update| Message::UpdateConfig(update.config)),
+            logind_sleep_subscription(),
         ])
     }
 
@@ -392,15 +447,24 @@ impl cosmic::Application for AppModel {
                 // Erfassung im Hintergrund anstoßen; Live-GPU (NVML) nur bei offenem Popup.
                 return self.spawn_refresh(self.popup.is_some());
             }
+            Message::PrepareForSleep(sleeping) => {
+                let mut c = self.collector.lock().unwrap_or_else(|e| e.into_inner());
+                c.paused = sleeping;
+                if !sleeping {
+                    // Aufwachen: Delta-Zustände sofort verwerfen — zwischen den
+                    // Signalen läuft nicht zwingend ein Tick mit `paused`.
+                    c.reset_deltas();
+                }
+            }
             Message::MetricsUpdated(m) => {
                 self.history.push(&m);
+                self.spark_caches.clear();
                 self.metrics = m;
                 self.refreshing = false;
-                if self.pending_live && self.popup.is_some() {
-                    self.pending_live = false;
+                // Verschluckten Live-Wunsch genau einmal nachholen.
+                if std::mem::take(&mut self.pending_live) && self.popup.is_some() {
                     return self.spawn_refresh(true);
                 }
-                self.pending_live = false;
             }
             Message::UpdateConfig(mut config) => {
                 config.metric_order = normalize_order(&config.metric_order);
@@ -694,6 +758,12 @@ impl AppModel {
         if !kind.enabled(c) {
             return Vec::new();
         }
+        let rc = RowCtx {
+            mono: c.mono_font,
+            accent: c.accent_labels,
+            parent: self.popup,
+            kind,
+        };
         match kind {
             MetricKind::Cpu => {
                 // links % · (mittig leer) · rechts Temp (eingefärbt nach Schwellen).
@@ -705,13 +775,12 @@ impl AppModel {
                     format!("{:.0} %", m.cpu_pct),
                     String::new(),
                     temp_cell(temp, c, c.mono_font),
-                    c.mono_font,
-                    c.accent_labels,
-                    self.popup,
+                    &rc,
                 )];
                 if c.show_graphs && c.graph_cpu {
                     rows.push(sparkline(SparkSpec {
                         series: vec![series_of(&self.history.cpu)],
+                        cache: &self.spark_caches.cpu,
                         fixed_max: Some(100.0),
                         caption_max: None,
                         span_s: self.history_span_s(),
@@ -729,13 +798,12 @@ impl AppModel {
                     format!("{:.0} %", mem_pct(m)),
                     fmt_mem(m),
                     temp_cell(m.ram_temp_c, c, c.mono_font),
-                    c.mono_font,
-                    c.accent_labels,
-                    self.popup,
+                    &rc,
                 )];
                 if c.show_graphs && c.graph_mem {
                     rows.push(sparkline(SparkSpec {
                         series: vec![series_of(&self.history.mem)],
+                        cache: &self.spark_caches.mem,
                         fixed_max: Some(100.0),
                         caption_max: None,
                         span_s: self.history_span_s(),
@@ -751,14 +819,12 @@ impl AppModel {
                 let mut rows = vec![labeled_row(
                     "Netz",
                     format!(
-                        "↓ {:>8} ↑ {:>8}{}",
+                        "↓ {:>7} ↑ {:>7}{}",
                         fmt_rate(m.net_down_bps, c),
                         fmt_rate(m.net_up_bps, c),
                         kind
                     ),
-                    c.mono_font,
-                    c.accent_labels,
-                    self.popup,
+                    &rc,
                 )];
                 if c.show_graphs && c.graph_net {
                     // ↓ voll, ↑ gedimmt; gemeinsames Maximum (autoskaliert).
@@ -769,6 +835,7 @@ impl AppModel {
                             series_of(&self.history.net_down),
                             series_of(&self.history.net_up),
                         ],
+                        cache: &self.spark_caches.net,
                         fixed_max: None,
                         caption_max: (peak > 0.0).then(|| fmt_rate(peak as f64, c)),
                         span_s: self.history_span_s(),
@@ -798,7 +865,7 @@ impl AppModel {
                     None
                 };
                 match (text, g.util) {
-                    (Some(t), _) => vec![labeled_row("GPU", t, c.mono_font, c.accent_labels, self.popup)],
+                    (Some(t), _) => vec![labeled_row("GPU", t, &rc)],
                     // aktiv mit Live-Zahlen: links % · mittig VRAM · rechts Temp (kein Modus → kein Umbruch).
                     (None, Some(u)) => {
                         let vram = match (g.vram_used_mb, g.vram_total_mb) {
@@ -816,9 +883,7 @@ impl AppModel {
                             format!("{u} %"),
                             vram,
                             temp_cell(g.temp_c.map(|t| t as f32), c, c.mono_font),
-                            c.mono_font,
-                            c.accent_labels,
-                            self.popup,
+                            &rc,
                         )]
                     }
                     (None, None) => Vec::new(),
@@ -834,7 +899,7 @@ impl AppModel {
                         .map(|r| r.to_string())
                         .collect::<Vec<_>>()
                         .join(" / ");
-                    vec![labeled_row("Lüfter", format!("{fans} rpm"), c.mono_font, c.accent_labels, self.popup)]
+                    vec![labeled_row("Lüfter", format!("{fans} rpm"), &rc)]
                 }
             }
             MetricKind::Cores => {
@@ -852,7 +917,7 @@ impl AppModel {
                             .join(" ");
                         // Folgezeilen ohne Label, aber gleiche Spaltenbreite → bündig untereinander.
                         let label = if i == 0 { "Kerne %" } else { "" };
-                        labeled_row(label, cores, true, c.accent_labels, self.popup)
+                        labeled_row(label, cores, &RowCtx { mono: true, ..rc })
                     })
                     .collect()
             }
@@ -887,14 +952,13 @@ impl AppModel {
                 let mut rows = vec![labeled_row(
                     "Watt",
                     parts.join(" · "),
-                    c.mono_font,
-                    c.accent_labels,
-                    self.popup,
+                    &rc,
                 )];
                 if c.show_graphs && c.graph_power {
                     let peak = peak_of(self.history.power.iter());
                     rows.push(sparkline(SparkSpec {
                         series: vec![series_of(&self.history.power)],
+                        cache: &self.spark_caches.power,
                         fixed_max: None,
                         caption_max: (peak > 0.0).then(|| format!("{peak:.0} W")),
                         span_s: self.history_span_s(),
@@ -927,20 +991,18 @@ impl AppModel {
                 if let Some(cw) = p.charger_w {
                     parts.push(format!("Netzteil ≈ {cw:.0} W"));
                 }
-                vec![labeled_row("Akku", parts.join(" · "), c.mono_font, c.accent_labels, self.popup)]
+                vec![labeled_row("Akku", parts.join(" · "), &rc)]
             }
             MetricKind::Disk => {
                 // Gleiche Pfeil-Konvention wie Netz: ↓ Lesen, ↑ Schreiben.
                 vec![labeled_row(
                     "Disk",
                     format!(
-                        "↓ {:>8} ↑ {:>8}",
+                        "↓ {:>7} ↑ {:>7}",
                         fmt_rate(m.disk_read_bps, c),
                         fmt_rate(m.disk_write_bps, c)
                     ),
-                    c.mono_font,
-                    c.accent_labels,
-                    self.popup,
+                    &rc,
                 )]
             }
             MetricKind::Swap => {
@@ -957,9 +1019,7 @@ impl AppModel {
                         m.swap_used_kb as f32 / (1024.0 * 1024.0),
                         m.swap_total_kb as f32 / (1024.0 * 1024.0)
                     ),
-                    c.mono_font,
-                    c.accent_labels,
-                    self.popup,
+                    &rc,
                 )]
             }
             MetricKind::Load => {
@@ -969,9 +1029,7 @@ impl AppModel {
                 vec![labeled_row(
                     "Load",
                     format!("{l1:.2}  {l5:.2}  {l15:.2}"),
-                    c.mono_font,
-                    c.accent_labels,
-                    self.popup,
+                    &rc,
                 )]
             }
             MetricKind::Uptime => {
@@ -981,9 +1039,7 @@ impl AppModel {
                 vec![labeled_row(
                     "Uptime",
                     fmt_uptime(s),
-                    c.mono_font,
-                    c.accent_labels,
-                    self.popup,
+                    &rc,
                 )]
             }
             MetricKind::NetTotal => {
@@ -997,15 +1053,14 @@ impl AppModel {
                         fmt_bytes(m.net_total_rx),
                         fmt_bytes(m.net_total_tx)
                     ),
-                    c.mono_font,
-                    c.accent_labels,
-                    self.popup,
+                    &rc,
                 )]
             }
         }
     }
 
-    /// Einstellungs-Ansicht: Metriken+Reihenfolge, Anzeige-Optionen, Intervall.
+    /// Einstellungs-Ansicht — Sektionen: Metriken & Reihenfolge, Inhalt,
+    /// Format, Darstellung, Panel, Aktualisierung; plus Zurücksetzen.
     fn settings_view(&self) -> Element<'_, Message> {
         let c = &self.config;
         let spacing = cosmic::theme::spacing();
@@ -1060,15 +1115,11 @@ impl AppModel {
         );
 
         // --- Format: WIE Werte formatiert sind ---
-        // Knopf zykliert die Einheit; „⟳" signalisiert die Klick-Aktion, Wert zeigt den aktuellen Stand.
-        let net_label = format!(
-            "{}  ⟳",
-            match c.net_unit {
-                1 => "MiB/s (binär)",
-                2 => "Mbit/s (Bit)",
-                _ => "MB/s (SI)",
-            }
-        );
+        let net_label = match c.net_unit {
+            1 => "MiB/s (binär)",
+            2 => "Mbit/s (Bit)",
+            _ => "MB/s (SI)",
+        };
         let format_section = widget::settings::section().header(padded_heading("Format"));
         let format_section = toggle_item(
             format_section,
@@ -1077,15 +1128,14 @@ impl AppModel {
             c.fahrenheit,
             Message::SetFahrenheit,
         );
-        let format_section = format_section.add(widget::settings::item_row(vec![
-            info_label(
-                "Netz-Einheit",
-                "Einheit für Netzwerk-Durchsatz: MB/s (SI, 10⁶), MiB/s (binär, 2²⁰) oder Mbit/s. Klick wechselt.",
-            ),
-            widget::button::text(net_label)
-                .on_press(Message::CycleNetUnit)
-                .into(),
-        ]));
+        let format_section = cycle_item(
+            format_section,
+            "Netz-Einheit",
+            "Einheit für Netzwerk-Durchsatz: MB/s (SI, 10⁶), MiB/s (binär, 2²⁰) oder Mbit/s. Klick wechselt.",
+            net_label.to_string(),
+            Message::CycleNetUnit,
+            false,
+        );
         let format_section = toggle_item(
             format_section,
             "Monospace-Schrift",
@@ -1166,12 +1216,9 @@ impl AppModel {
         );
 
         // --- Panel: Anzeige in der Leiste ---
-        let panel_metric_label = format!(
-            "{}  ⟳",
-            MetricKind::from_u8(c.panel_metric)
-                .unwrap_or(MetricKind::Cpu)
-                .label()
-        );
+        let panel_metric_label = MetricKind::from_u8(c.panel_metric)
+            .unwrap_or(MetricKind::Cpu)
+            .label();
         let panel_section = widget::settings::section().header(padded_heading("Panel"));
         let panel_section = toggle_item(
             panel_section,
@@ -1180,15 +1227,14 @@ impl AppModel {
             c.panel_text,
             Message::SetPanelText,
         );
-        let panel_section = panel_section.add(widget::settings::item_row(vec![
-            indented(info_label(
-                "Panel-Wert",
-                "Welche Metrik neben dem Panel-Icon steht (CPU, RAM, Netz, GPU oder Watt). Klick wechselt.",
-            )),
-            widget::button::text(panel_metric_label)
-                .on_press(Message::CyclePanelMetric)
-                .into(),
-        ]));
+        let panel_section = cycle_item(
+            panel_section,
+            "Panel-Wert",
+            "Welche Metrik neben dem Panel-Icon steht (CPU, RAM, Netz, GPU oder Watt). Klick wechselt.",
+            panel_metric_label.to_string(),
+            Message::CyclePanelMetric,
+            true,
+        );
 
         // Auf Standard zurücksetzen (schreibt alle Felder neu).
         // Horizontal `space_m` — gleiche Einzugs-Konvention wie `padded_heading`,
@@ -1216,67 +1262,79 @@ impl AppModel {
 
 // ---- UI-Helfer ----
 
-/// Erklärtext zur Metrik-Zeile der Hauptansicht: was die Anzeige konkret
-/// bedeutet (Spalten, Zustände, Quellen). Schlüssel ist das angezeigte Label —
-/// die Labels sind kanonisch (`MetricKind::label()` bzw. „Kerne %").
-fn metric_value_info(label: &'static str) -> Option<&'static str> {
-    // Muster: Kopfzeile (was die Zeile zeigt), darunter „•"-Punkte je
-    // Spalte/Zustand — statt Semikolon-Fließtext.
-    Some(match label {
-        "CPU" => "Gesamtauslastung aller Kerne.\n\
+impl MetricKind {
+    /// Erklärtext zur Metrik-Zeile der Hauptansicht: was die Anzeige konkret
+    /// bedeutet (Spalten, Zustände, Quellen). Muster: Kopfzeile, darunter
+    /// „•"-Punkte je Spalte/Zustand — gerendert von `info_content`.
+    fn info_detail(self) -> &'static str {
+        match self {
+            Self::Cpu => "Gesamtauslastung aller Kerne.\n\
             • links % · rechts Paket-Temperatur (hwmon)\n\
             • Verlauf: Hovern zeigt Wert und Zeitpunkt",
-        "RAM" => "Arbeitsspeicher-Belegung.\n\
+            Self::Mem => "Arbeitsspeicher-Belegung.\n\
             • links % · Mitte belegt/gesamt GiB\n\
             • rechts RAM-Temperatur (falls Sensor vorhanden)\n\
             • Verlauf: Hovern zeigt Wert und Zeitpunkt",
-        "Netz" => "Datenrate der aktiven Schnittstelle.\n\
+            Self::Net => "Datenrate der aktiven Schnittstelle.\n\
             • ↓ empfangen · ↑ senden · Typ (WLAN/LAN/VPN)\n\
             • Einheit unter „Netz-Einheit“ wählbar\n\
             • Verlauf: Skala 0…≤ Fenster-Maximum, ↑ gedimmt; Hovern zeigt Werte und Zeitpunkt",
-        "GPU" => "Dedizierte NVIDIA-GPU (NVML).\n\
+            Self::Gpu => "Dedizierte NVIDIA-GPU (NVML).\n\
             • „schläft“ — Stromsparmodus, wird nie geweckt\n\
             • „keine NVIDIA“ — keine dGPU gefunden\n\
             • „aktiv · Modus“ — wach, ohne Live-Werte\n\
             • sonst: Auslastung % · VRAM · Temperatur",
-        "Lüfter" => "Drehzahlen aller erkannten Lüfter (hwmon), in U/min.",
-        "Kerne %" => "Auslastung je CPU-Kern in Prozent, Reihen zu je 6 Kernen.",
-        "Watt" => "Leistungsaufnahme des Systems.\n\
+            Self::Fans => "Drehzahlen aller erkannten Lüfter (hwmon), in U/min.",
+            Self::Cores => "Auslastung je CPU-Kern in Prozent, Reihen zu je 6 Kernen.",
+            Self::Power => "Leistungsaufnahme des Systems.\n\
             • Gesamt: RAPL psys — „– · Netz“ heißt: am Netz nicht messbar (nur Akku-Messung verfügbar)\n\
             • CPU-Package · GPU (Schalter „Watt aufschlüsseln“)\n\
             • beim Laden: „Netzteil ≈“ psys + Ladeleistung\n\
             • Verlauf: Skala 0…≤ Fenster-Maximum; Hovern zeigt Wert und Zeitpunkt",
-        "Akku" => "Akku-Zustand.\n\
+            Self::Battery => "Akku-Zustand.\n\
             • Spannung (V) · Status (lädt/entlädt/voll)\n\
             • Lade-/Entladeleistung in W, nur wenn Strom fließt",
-        "Disk" => "Datenrate aller physischen Laufwerke.\n\
+            Self::Disk => "Datenrate aller physischen Laufwerke.\n\
             • ↓ lesen · ↑ schreiben\n\
             • Partitionen/virtuelle Devices nicht doppelt gezählt\n\
             • Quelle: /proc/diskstats",
-        "Swap" => "Auslagerungsspeicher: % und belegt/gesamt GiB.\n\
+            Self::Swap => "Auslagerungsspeicher: % und belegt/gesamt GiB.\n\
             • Zeile erscheint nur, wenn Swap eingerichtet ist",
-        "Load" => "Load Average 1 / 5 / 15 min.\n\
+            Self::Load => "Load Average 1 / 5 / 15 min.\n\
             • Ø lauffähige Prozesse; Werte über der Kernzahl bedeuten Wartezeiten",
-        "Uptime" => "Zeit seit dem letzten Systemstart.",
-        "Netz Σ" => "Summe seit Systemstart (aktive Schnittstelle).\n\
+            Self::Uptime => "Zeit seit dem letzten Systemstart.",
+            Self::NetTotal => "Summe seit Systemstart (aktive Schnittstelle).\n\
             • ↓ empfangen · ↑ gesendet\n\
             • bei Wechsel WLAN↔LAN zählt die neue ab ihrem Stand",
-        _ => return None,
-    })
+        }
+    }
+}
+
+/// Kontext einer Metrik-Zeile — bündelt die früher einzeln durchgereichten
+/// Parameter (Monospace, Akzentfarbe, Popup-Fenster fürs Wayland-Tooltip)
+/// plus die Metrik selbst (typsicherer Schlüssel für den Erklärtext).
+#[derive(Clone, Copy)]
+struct RowCtx {
+    mono: bool,
+    accent: bool,
+    parent: Option<Id>,
+    kind: MetricKind,
 }
 
 /// Fette Metrik-Beschriftung in fester Spaltenbreite (`LABEL_WIDTH`);
-/// optional in der System-Akzentfarbe (`accent_labels`). Gibt es einen
-/// Erklärtext, ist NUR das Wort hoverbar; die Info-Box öffnet als
-/// Wayland-Popup links vom Wort — über den Fensterrand hinaus, damit sie
-/// die Werte nicht überdeckt (`parent` = Fenster-Id des Metrik-Popups).
-fn bold_label<'a>(label: &'static str, accent: bool, parent: Option<Id>) -> Element<'a, Message> {
+/// optional in der System-Akzentfarbe. Nur das Wort ist hoverbar; die
+/// Info-Box öffnet als Wayland-Popup links über den Fensterrand hinaus,
+/// damit sie die Werte nicht überdeckt. Leeres Label (Kerne-Folgezeilen)
+/// bekommt kein Tooltip.
+fn bold_label<'a>(label: &'static str, rc: &RowCtx) -> Element<'a, Message> {
     let mut t = widget::text(label).font(cosmic::font::bold());
-    if accent {
+    if rc.accent {
         t = t.class(cosmic::theme::Text::Accent);
     }
-    let word: Element<'a, Message> = match (metric_value_info(label), parent) {
-        (Some(info), Some(parent)) => metric_tooltip(t, info, parent),
+    let word: Element<'a, Message> = match rc.parent {
+        Some(parent) if !label.is_empty() => {
+            metric_tooltip(t, rc.kind.info_detail(), parent)
+        }
         _ => t.into(),
     };
     // Feste Spaltenbreite außen — der Tooltip bleibt aufs Wort begrenzt.
@@ -1286,20 +1344,14 @@ fn bold_label<'a>(label: &'static str, accent: bool, parent: Option<Id>) -> Elem
 }
 
 /// Einzeilige Metrik-Zeile: fettes Label + Wert (optional Monospace für bündige Ziffern).
-fn labeled_row<'a>(
-    label: &'static str,
-    value: String,
-    mono: bool,
-    accent: bool,
-    parent: Option<Id>,
-) -> Element<'a, Message> {
+fn labeled_row<'a>(label: &'static str, value: String, rc: &RowCtx) -> Element<'a, Message> {
     let val = widget::text(value);
-    let val = if mono {
+    let val = if rc.mono {
         val.font(cosmic::iced::Font::MONOSPACE)
     } else {
         val
     };
-    widget::row::with_children(vec![bold_label(label, accent, parent), val.into()])
+    widget::row::with_children(vec![bold_label(label, rc), val.into()])
         .spacing(cosmic::theme::spacing().space_xs)
         .align_y(Alignment::Center)
         .into()
@@ -1316,24 +1368,28 @@ fn value_text<'a>(s: String, mono: bool) -> Element<'a, Message> {
 }
 
 /// Drei-Spalten-Zeile (ohne „·"-Trenner): **links** Primärwert (z. B. Auslastung %),
-/// **mittig** Detail (RAM-GiB / GPU-VRAM), **rechts** Temp (als fertiges Element, damit es
-/// eingefärbt werden kann). Getrennt durch Fill-Spacer → linke und rechte Spalte sind verankert.
+/// **mittig** Detail (RAM-GiB / GPU-VRAM), **rechts** Temp (als fertiges Element,
+/// damit es eingefärbt werden kann). Mittel- und Temp-Spalte haben feste Breite
+/// und sind rechtsbündig verankert → die Werte fluchten zeilenübergreifend.
 fn triple_row<'a>(
     label: &'static str,
-    left: String,
+    left: Element<'a, Message>,
     mid: String,
     right: Element<'a, Message>,
-    mono: bool,
-    accent: bool,
-    parent: Option<Id>,
+    rc: &RowCtx,
 ) -> Element<'a, Message> {
     widget::row::with_children(vec![
-        bold_label(label, accent, parent),
-        value_text(left, mono),
+        bold_label(label, rc),
+        left,
         widget::space::horizontal().into(),
-        value_text(mid, mono),
-        widget::space::horizontal().into(),
-        right,
+        widget::container(value_text(mid, rc.mono))
+            .width(Length::Fixed(MID_COL_WIDTH))
+            .align_x(Alignment::End)
+            .into(),
+        widget::container(right)
+            .width(Length::Fixed(TEMP_COL_WIDTH))
+            .align_x(Alignment::End)
+            .into(),
     ])
     .spacing(cosmic::theme::spacing().space_xs)
     .align_y(Alignment::Center)
@@ -1351,18 +1407,30 @@ fn temp_cell<'a>(celsius: Option<f32>, cfg: &Config, mono: bool) -> Element<'a, 
         t = t.font(cosmic::iced::Font::MONOSPACE);
     }
     if c >= cfg.crit_temp_c as f32 {
-        t = t.class(cosmic::theme::Text::Color(cosmic::iced::Color::from_rgb(
-            0.90, 0.22, 0.22, // kritisch: rot
-        )));
+        t = t.class(cosmic::theme::Text::Color(CRIT_COLOR));
     } else if c >= cfg.warn_temp_c as f32 {
-        t = t.class(cosmic::theme::Text::Color(cosmic::iced::Color::from_rgb(
-            0.95, 0.65, 0.15, // Warnung: orange
-        )));
+        t = t.class(cosmic::theme::Text::Color(WARN_COLOR));
     }
     t.into()
 }
 
 /// CPU/RAM/GPU als Drei-Spalten-Zeile; bei `graphical` zusätzlich ein Balken (volle Breite) darunter.
+/// Auslastungs-Zelle: der Prozentwert färbt sich an den Schwellen wie die
+/// Temperaturen (≥ 90 % kritisch, ≥ 75 % Warnung) — der Theme-Balken selbst
+/// ist per libcosmic-API nicht einfärbbar (StyleSheet fest verdrahtet).
+fn usage_cell<'a>(frac: f32, s: String, mono: bool) -> Element<'a, Message> {
+    let mut t = widget::text(s);
+    if mono {
+        t = t.font(cosmic::iced::Font::MONOSPACE);
+    }
+    if frac >= 0.9 {
+        t = t.class(cosmic::theme::Text::Color(CRIT_COLOR));
+    } else if frac >= 0.75 {
+        t = t.class(cosmic::theme::Text::Color(WARN_COLOR));
+    }
+    t.into()
+}
+
 fn metric_or_bar<'a>(
     graphical: bool,
     label: &'static str,
@@ -1370,13 +1438,13 @@ fn metric_or_bar<'a>(
     left: String,
     mid: String,
     right: Element<'a, Message>,
-    mono: bool,
-    accent: bool,
-    parent: Option<Id>,
+    rc: &RowCtx,
 ) -> Element<'a, Message> {
-    let head = triple_row(label, left, mid, right, mono, accent, parent);
+    let head = triple_row(label, usage_cell(frac, left, rc.mono), mid, right, rc);
     if graphical {
+        // Schwellen-Marker bei 75 %/90 % als visuelle Warnlinien.
         let bar = widget::determinate_linear(frac.clamp(0.0, 1.0))
+            .markers(vec![0.75, 0.9])
             .width(Length::Fill)
             .girth(Length::Fixed(BAR_GIRTH));
         widget::column::with_children(vec![head, bar.into()])
@@ -1572,6 +1640,25 @@ fn toggle_item<'a>(
     ]))
 }
 
+/// Zyklus-Zeile: Label + Info links, rechts ein Button, der den aktuellen
+/// Wert zeigt und beim Klick weiterschaltet („⟳"-Konvention).
+fn cycle_item<'a>(
+    section: widget::settings::Section<'a, Message>,
+    title: &'static str,
+    info: &'static str,
+    current: String,
+    msg: Message,
+    sub: bool,
+) -> widget::settings::Section<'a, Message> {
+    let label = info_label(title, info);
+    section.add(widget::settings::item_row(vec![
+        if sub { indented(label) } else { label },
+        widget::button::text(format!("{current}  ⟳"))
+            .on_press(msg)
+            .into(),
+    ]))
+}
+
 /// Wie `toggle_item`, aber als eingerückter Unterpunkt (z. B. die
 /// Pro-Metrik-Schalter unter dem Verlaufs-Master).
 fn sub_toggle_item<'a>(
@@ -1598,8 +1685,11 @@ fn mem_pct(m: &Metrics) -> f32 {
 /// Sparkline-Verlauf als Canvas: Linie + zart gefüllte Fläche in der
 /// System-Akzentfarbe; zweite Serie (Netz ↑) gedimmt. Neueste Werte rechts,
 /// die x-Achse ist auf `HISTORY_LEN` fixiert — der Graph „läuft" von rechts ein.
-struct Sparkline {
+struct Sparkline<'c> {
     series: Vec<Vec<f32>>,
+    /// Persistenter Geometrie-Cache (lebt im AppModel): die Kurven-Tessellation
+    /// läuft nur bei neuen Daten, nicht bei jedem Hover-Frame.
+    cache: &'c widget::canvas::Cache,
     /// Normierungs-Maximum; `None` = gemeinsames Maximum der Serien (autoskaliert).
     fixed_max: Option<f32>,
     /// Fertig formatiertes Skalen-Maximum für die Beschriftung (nur autoskaliert).
@@ -1672,7 +1762,7 @@ fn curve_path(
     })
 }
 
-impl Sparkline {
+impl Sparkline<'_> {
     /// x-Position eines Sample-Index einer Serie der Länge `len`:
     /// die x-Achse ist auf `HISTORY_LEN` fixiert, kürzere Historie läuft
     /// von rechts ein (links Leerraum).
@@ -1698,7 +1788,7 @@ impl Sparkline {
     }
 }
 
-impl<Message> widget::canvas::Program<Message, cosmic::Theme> for Sparkline {
+impl<Message> widget::canvas::Program<Message, cosmic::Theme> for Sparkline<'_> {
     /// Hover-Position (bounds-relativ); `None` = Cursor nicht über dem Graph.
     type State = Option<cosmic::iced::Point>;
 
@@ -1748,7 +1838,6 @@ impl<Message> widget::canvas::Program<Message, cosmic::Theme> for Sparkline {
     ) -> Vec<widget::canvas::Geometry> {
         use cosmic::iced::Point;
         use widget::canvas::{Frame, Path};
-        let mut frame = Frame::new(renderer, bounds.size());
         let (w, h) = (bounds.width, bounds.height);
         let raw_max = self.fixed_max.unwrap_or_else(|| {
             self.series
@@ -1763,6 +1852,14 @@ impl<Message> widget::canvas::Program<Message, cosmic::Theme> for Sparkline {
         // eine flache Linie auf der Grundkante wäre nur Rauschen.
         let has_data = self.fixed_max.is_some() || raw_max > 0.0;
 
+        let mut text_color: cosmic::iced::Color =
+            theme.cosmic().background.component.on.into();
+        text_color.a = 0.35;
+
+        // Statische Geometrie (Kurven, Fläche, Referenzlinie) aus dem Cache —
+        // neu tesselliert nur nach Daten-Update (SparkCaches::clear), nicht
+        // bei Hover-Redraws.
+        let static_geom = self.cache.draw(renderer, bounds.size(), |frame| {
         // Bewusst KEINE explizite Null-Linie an der Unterkante (ausprobiert,
         // wieder entfernt): Kurve + zarte Fläche wirken ohne sie ruhiger.
         for (si, data) in self.series.iter().enumerate() {
@@ -1806,28 +1903,27 @@ impl<Message> widget::canvas::Program<Message, cosmic::Theme> for Sparkline {
                     if v > 0.0 {
                         run_start.get_or_insert(i);
                     } else if let Some(s) = run_start.take() {
-                        draw_run(s, i - 1, &mut frame);
+                        draw_run(s, i - 1, frame);
                     }
                 }
                 if let Some(s) = run_start {
-                    draw_run(s, data.len() - 1, &mut frame);
+                    draw_run(s, data.len() - 1, frame);
                 }
             }
         }
 
-        let mut text_color: cosmic::iced::Color =
-            theme.cosmic().background.component.on.into();
-        text_color.a = 0.35;
-
         // Hauchfeine gepunktete Referenzlinie auf Kurven-Oberkante (= Skalen-
-        // Maximum) direkt unter dem Text — macht die Koordinaten-Lesart
-        // „Beschriftung gehört zur Oberkante" explizit. Nur bei autoskalierten
-        // Graphen; bei fester 100-%-Skala wäre sie Rauschen.
+        // Maximum) direkt unter dem Text. Nur bei autoskalierten Graphen;
+        // bei fester 100-%-Skala wäre sie Rauschen.
         if self.caption_max.is_some() && has_data {
             let mut rule_color = text_color;
             rule_color.a = 0.25;
-            dotted_rule(&mut frame, SPARK_TEXT_ZONE + SPARK_HW, w, rule_color);
+            dotted_rule(frame, SPARK_TEXT_ZONE + SPARK_HW, w, rule_color);
         }
+        });
+
+        // --- Dynamische Ebene: Hover-Overlay + Beschriftung (billig) ---
+        let mut frame = Frame::new(renderer, bounds.size());
 
         // --- Hover: Crosshair + Marker + Werte in der Textzone ---
         // Die Textzone ist kurvenfrei reserviert; der Hover-Text ersetzt dort
@@ -1907,7 +2003,7 @@ impl<Message> widget::canvas::Program<Message, cosmic::Theme> for Sparkline {
                 ..Default::default()
             });
         }
-        vec![frame.into_geometry()]
+        vec![static_geom, frame.into_geometry()]
     }
 }
 
@@ -1923,8 +2019,10 @@ fn peak_of<'a>(iter: impl Iterator<Item = &'a f32>) -> f32 {
 
 /// Parameter einer Sparkline-Zeile — benannte Felder statt fünf
 /// Positionsargumenten an den Callsites.
-struct SparkSpec {
+struct SparkSpec<'c> {
     series: Vec<Vec<f32>>,
+    /// Persistenter Geometrie-Cache aus dem AppModel.
+    cache: &'c widget::canvas::Cache,
     /// Normierungs-Maximum; `None` = gemeinsames Maximum der Serien (autoskaliert).
     fixed_max: Option<f32>,
     /// Fertig formatiertes Skalen-Maximum für die Beschriftung (nur autoskaliert).
@@ -1936,9 +2034,10 @@ struct SparkSpec {
 }
 
 /// Sparkline-Zeile unter einer Metrik (volle Breite, feste Höhe).
-fn sparkline<'a>(spec: SparkSpec) -> Element<'a, Message> {
+fn sparkline<'a>(spec: SparkSpec<'a>) -> Element<'a, Message> {
     widget::canvas(Sparkline {
         series: spec.series,
+        cache: spec.cache,
         fixed_max: spec.fixed_max,
         caption_max: spec.caption_max,
         span_label: fmt_span(spec.span_s),

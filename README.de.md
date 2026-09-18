@@ -27,7 +27,9 @@ So bleibt das Applet leichtgewichtig und ist die direkte Antwort auf den Suspend
 ## Anzeige
 
 - **Panel:** symbolisches Chip-Icon, optional mit kompaktem Wert daneben (z. B. `CPU 12%` oder `↓1.2M/s ↑0.1M/s`, nur horizontale Leiste). Die Applet-Fläche **wächst dynamisch** mit dem Text (via `core.applet.autosize_window`).
-- **Popup (Details):** CPU (gesamt + Temp, optional pro Kern), RAM (genutzt/gesamt + Temp), Netz (↓/↑ + Typ **WLAN/LAN/VPN**), GPU (bei aktiver dGPU Last + VRAM + Temp; sonst Zustand/Modus), Lüfterdrehzahlen, **Leistungsaufnahme** (System gesamt / CPU-Paket / GPU in Watt — siehe *Leistungsmessung (RAPL)* unten) sowie optional eine **Akku-Zeile** (Spannung, Ladezustand, Lade-/Entladeleistung). Optional als **Auslastungsbalken** (zweizeilig, volle Breite) für CPU/RAM/GPU.
+- **Popup (Details):** CPU (gesamt + Temp, optional pro Kern), RAM (genutzt/gesamt + Temp), Netz (↓/↑ + Typ **WLAN/LAN/VPN**), GPU (bei aktiver dGPU Last + VRAM + Temp; sonst Zustand/Modus), Lüfterdrehzahlen, **Leistungsaufnahme** (System gesamt / CPU-Paket / GPU in Watt — siehe *Leistungsmessung (RAPL)* unten) sowie optional eine **Akku-Zeile** (Spannung, Ladezustand, Lade-/Entladeleistung). Weitere Opt-in-Metriken (standardmäßig aus): **Disk-I/O** (Lese-/Schreibrate über physische Laufwerke), **Swap**, **Load Average** (1/5/15 min), **Uptime** und **kumuliertes Netz-Gesamtvolumen** seit dem Booten. Optional als **Auslastungsbalken** (zweizeilig, volle Breite) für CPU/RAM/GPU.
+- **Verlaufs-Graphen (Sparklines):** ein ~3-minütiger Mini-Graph unter CPU, RAM, Netz (↓ voll, ↑ gedimmt) und Watt, gezeichnet in der System-Akzentfarbe; die Historie läuft auch bei geschlossenem Popup weiter. Hovern zeigt Wert und Zeitversatz an der Cursor-Position; autoskalierte Graphen tragen eine gepunktete Max-Referenzlinie und eine `≤ max · span`-Beschriftung. Master-Schalter plus Einzelschalter je Metrik.
+- **Info-Tooltips überall:** jedes Einstellungs-Label hat ein ⓘ-Icon mit Erklärung; die fetten Metrik-Wörter in der Hauptansicht zeigen beim Hovern eine strukturierte Info-Box (ein echtes Wayland-Popup, das über den Fensterrand hinausragen darf und so die Werte nie verdeckt).
 
 ## Datenquellen
 
@@ -45,6 +47,11 @@ So bleibt das Applet leichtgewichtig und ist die direkte Antwort auf den Suspend
 | GPU-Last/Temp/VRAM/Watt | NVML (`libnvidia-ml`, `memory_info()`, `power_usage()`) — nur wenn dGPU aktiv |
 | System-/CPU-Paket-Leistung | RAPL `/sys/class/powercap` (`psys` / `package-0`, Zählerdelta) — braucht die Opt-in-udev-Regel, siehe unten |
 | Akku-Spannung/-Leistung/-Status | `/sys/class/power_supply/BAT*/{voltage_now,power_now,status}` |
+| Disk-I/O | `/proc/diskstats` (512-Byte-Sektoren, Delta; Partitionen und gestapelte Devices wie `dm-`/`md`/`zram` ausgeschlossen, um Doppelzählung zu vermeiden) |
+| Swap | `/proc/meminfo` (`SwapTotal`/`SwapFree`) |
+| Load Average | `/proc/loadavg` |
+| Uptime | `/proc/uptime` |
+| Netz gesamt (Σ) | kumulierte `rx_bytes`/`tx_bytes` — dieselben Zähler wie für die Rate |
 
 ## Hardware-Anpassung
 

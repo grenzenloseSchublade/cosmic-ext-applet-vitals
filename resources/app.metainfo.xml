@@ -9,7 +9,9 @@
     <p>
       Zeigt CPU- und RAM-Auslastung, Temperaturen, Netzwerk-Durchsatz,
       NVIDIA-GPU-Status, Leistungsaufnahme (System/CPU/GPU in Watt) und optional
-      den Akku im COSMIC-Panel oder -Dock. Liest ausschließlich /proc und
+      Akku, Disk-I/O, Swap, Load Average, Uptime sowie den kumulierten
+      Netzwerk-Verbrauch im COSMIC-Panel oder -Dock — mit Verlaufs-Graphen
+      (Sparklines) und Hover-Erklärungen. Liest ausschließlich /proc und
       /sys und startet niemals einen Subprozess; die NVIDIA-dGPU wird nur abgefragt,
       wenn sie ohnehin wach ist — daher batterieschonend und suspend-fest.
     </p>

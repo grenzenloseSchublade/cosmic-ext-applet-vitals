@@ -20,6 +20,9 @@ tokio = { version = "1", default-features = false, features = ["rt"] }
 # Für SctkPopupSettings der Wayland-Tooltips (echte xdg_popup-Surfaces, die über
 # den Fensterrand hinausragen dürfen). Gleiche Quelle/rev wie libcosmic → dedupliziert.
 iced_runtime = { git = "https://github.com/pop-os/libcosmic.git", rev = "417923fb" }
+# logind-Suspend-Signal (PrepareForSleep) pausiert die Delta-Erfassung sauber.
+# Version wie im Lock (kommt transitiv ohnehin mit).
+zbus = { version = "5", default-features = false, features = ["tokio"] }
 
 [dependencies.libcosmic]
 git = "https://github.com/pop-os/libcosmic.git"
