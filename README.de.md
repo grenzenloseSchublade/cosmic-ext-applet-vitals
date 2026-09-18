@@ -117,6 +117,17 @@ Das vorgebaute Binary zielt auf **amd64** mit aktueller glibc (Klasse Pop!_OS / 
 
 Installiert Binary nach `~/.local/bin`, `.desktop` nach `~/.local/share/applications`. System-weit: `sudo just install` (prefix=/usr).
 
+**Neuen Build ausrollen (Applet neu starten):** Installieren ersetzt nur die Datei auf der Platte — das laufende Applet führt das alte (gelöschte) Binary weiter aus, bis es neu gestartet wird. `cosmic-panel` respawnt ein gekilltes Applet **nicht** von allein; stattdessen das Panel neu starten (cosmic-session startet es samt aller Applets neu):
+
+```sh
+just install-user
+kill $(pgrep -x cosmic-panel)     # Session startet Panel + Applets automatisch neu
+# prüfen, dass das neue Binary läuft (kein "(deleted)"-Suffix):
+for p in $(pgrep -f cosmic-ext-applet-vitals); do readlink /proc/$p/exe; done
+```
+
+Hinweis: `pkill -f cosmic-ext-applet-vitals` ist in Skripten eine Falle — das Muster trifft auch die Shell, die den Befehl ausführt, und killt so das eigene Skript. Stattdessen wie oben über `/proc/<pid>/exe` filtern.
+
 **C) Eigenes `.deb` bauen:**
 
 ```sh
@@ -145,10 +156,14 @@ Dasselbe Applet lässt sich in Panel **und/oder** Dock platzieren. Klick öffnet
 Im Detail-Popup oben rechts das **Zahnrad** anklicken → Einstellungs-Ansicht (zurück über den **Pfeil**):
 
 - **Metriken & Reihenfolge:** je Metrik ein Schalter (an/aus) plus **▲/▼** zum Umsortieren. Die Reihenfolge gilt sofort für die Werteliste und wird persistiert (`metric_order`).
-- **Anzeige:** CPU-Temperatur, °C/°F, Monospace-Schrift, „GPU im Schlaf ausblenden", **Netz-Einheit** (Klick zykliert SI → binär → Bit).
-- **Darstellung:** **Balken im Popup** (grafische Auslastung für CPU/RAM/GPU statt Text), **Wert neben dem Panel-Icon** (kompakt, nur in horizontaler Leiste) sowie **Panel-Wert** (welche Metrik dort steht: CPU/RAM/Netz/GPU/Watt).
+- **Inhalt** (was das Popup zeigt): CPU-Temperatur, „GPU im Schlaf ausblenden", **Watt aufschlüsseln** (System/CPU/GPU als getrennte Werte).
+- **Format:** °C/°F, **Netz-Einheit** (Klick zykliert SI → binär → Bit), Monospace-Schrift.
+- **Darstellung:** **Balken im Popup** (CPU/RAM/GPU), **Verlaufs-Graphen (Sparklines)** — Master-Schalter plus eingerückte Einzelschalter für CPU/RAM/Netz/Watt — sowie **Labels in Akzentfarbe**.
+- **Panel:** **Wert neben dem Panel-Icon** (kompakt, nur in horizontaler Leiste) mit eingerückter Auswahl **Panel-Wert** (CPU/RAM/Netz/GPU/Watt).
 - **Aktualisierung:** Intervall in ms (Schritt 250, min 250).
 - **Auf Standard zurücksetzen:** alle Optionen (inkl. Reihenfolge) auf die Defaults.
+
+Jedes Label trägt ein ⓘ-Info-Tooltip, das die Option erklärt.
 
 Alles greift **live** und landet in der cosmic-config (siehe unten).
 
@@ -164,12 +179,17 @@ Persistiert über cosmic-config (live, ohne Neustart). Optionen u. a.:
 | `net_unit` | 0 = MB/s, 1 = MiB/s, 2 = Mbit/s | 0 |
 | `show_fans` | Lüfterzeile im Popup | an |
 | `show_power` | Watt-Zeile (System/CPU/GPU) im Popup | an |
+| `power_breakdown` | Watt-Zeile zusätzlich in CPU-/GPU-Werte aufgeschlüsselt | an |
 | `show_battery` | Akku-Zeile (Spannung, Status) im Popup | aus |
+| `show_disk` / `show_swap` / `show_load` / `show_uptime` / `show_net_total` | die neueren Opt-in-Metrikzeilen | aus |
 | `mono_font` | Monospace-Font in der Werteliste | an |
 | `hide_gpu_when_asleep` | dGPU im Schlaf ganz ausblenden | aus |
 | `per_core` | CPU pro Kern im Popup | an |
-| `metric_order` | Reihenfolge der Metriken (IDs: 0=CPU,1=RAM,2=Netz,3=GPU,4=Lüfter,5=Kerne,6=Watt,7=Akku) | `[0,1,2,3,4,5,6,7]` |
+| `metric_order` | Reihenfolge der Metriken (IDs: 0=CPU, 1=RAM, 2=Netz, 3=GPU, 4=Lüfter, 5=Kerne, 6=Watt, 7=Akku, 8=Disk, 9=Swap, 10=Load, 11=Uptime, 12=Netz Σ) | `[0…12]` |
 | `graphical` | Auslastungsbalken im Popup (CPU/RAM/GPU) | aus |
+| `show_graphs` | Master-Schalter für Sparklines | an |
+| `graph_cpu` / `graph_mem` / `graph_net` / `graph_power` | Sparkline-Einzelschalter je Metrik | an |
+| `accent_labels` | fette Metrik-Labels in der System-Akzentfarbe | an |
 | `panel_text` | Kompakter Wert neben dem Panel-Icon (nur horizontale Leiste) | aus |
 | `panel_metric` | Welche Metrik im Panel-Text (0=CPU,1=RAM,2=Netz,3=GPU,6=Watt) | 0 |
 | `warn_temp_c` / `crit_temp_c` | Schwellen für Farbwarnungen | 80 / 90 |

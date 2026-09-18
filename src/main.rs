@@ -2,8 +2,12 @@
 
 mod app;
 mod config;
+mod format;
 mod hw;
+mod metric;
 mod metrics;
+mod sparkline;
+mod widgets;
 
 fn main() -> cosmic::iced::Result {
     // Startet die Event-Loop des Applets mit `()` als Flags.
